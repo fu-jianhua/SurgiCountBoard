@@ -1,0 +1,11 @@
+models/
+output/
+*.mp4
+*.wav
+__pycache__/*
+*.pyc
+.vscode
+*.py[cod]
+test.py
+*.png
+*.db
