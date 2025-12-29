@@ -18,3 +18,32 @@ class ROIRect:
 
     def to_json(self) -> str:
         return json.dumps({"type": "rect", "x1": self.x1, "y1": self.y1, "x2": self.x2, "y2": self.y2})
+
+class ROIPolygon:
+    def __init__(self, points: list[tuple[int, int]]):
+        self.points = [(int(x), int(y)) for x, y in points]
+
+    def contains(self, x: float, y: float) -> bool:
+        n = len(self.points)
+        if n < 3:
+            return False
+        inside = False
+        j = n - 1
+        for i in range(n):
+            xi, yi = self.points[i]
+            xj, yj = self.points[j]
+            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi + 1e-9) + xi):
+                inside = not inside
+            j = i
+        return inside
+
+    def clamp(self, w: int, h: int):
+        clamped = []
+        for x, y in self.points:
+            cx = max(0, min(x, w - 1))
+            cy = max(0, min(y, h - 1))
+            clamped.append((cx, cy))
+        self.points = clamped
+
+    def to_json(self) -> str:
+        return json.dumps({"type": "poly", "points": self.points})

@@ -82,7 +82,8 @@ if start_btn and not st.session_state.running:
                         st.session_state.video_path = out_path
                         st.session_state.writer = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
                     for ts, cls_id, tid, c in events:
-                        add_detection(sid, ts, cls_id, tid, c)
+                        if tid is not None and tid >= 0:
+                            add_detection(sid, ts, cls_id, tid, c)
                 ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path if "video_path" in st.session_state else None)
                 if ended is not None and st.session_state.writer is not None:
                     close_writer(st.session_state.writer)
