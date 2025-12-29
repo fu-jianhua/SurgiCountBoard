@@ -7,7 +7,7 @@ from core.source import open_capture
 from core.roi import ROIRect
 from core.pipeline import Pipeline
 from core.session import SessionManager
-from core.store import init_db, add_detection, list_sessions, session_stats, range_stats
+from core.store import init_db, add_detection, list_sessions, session_stats, range_stats, end_session
 from core.video import open_writer, write_frame, close_writer
 
 st.set_page_config(page_title="SurgiCountBoard", layout="wide")
@@ -51,10 +51,33 @@ if "session" not in st.session_state:
     st.session_state.session = None
 if "roi" not in st.session_state:
     st.session_state.roi = None
+if "cap" not in st.session_state:
+    st.session_state.cap = None
+
+if stop_btn and st.session_state.running:
+    st.session_state.running = False
+    try:
+        if st.session_state.cap is not None:
+            st.session_state.cap.release()
+    except Exception:
+        pass
+    st.session_state.cap = None
+    if st.session_state.writer is not None:
+        close_writer(st.session_state.writer)
+        st.session_state.writer = None
+    if st.session_state.session is not None and getattr(st.session_state.session, "current_session_id", None) is not None:
+        end_session(st.session_state.session.current_session_id, time.time(), st.session_state.video_path if "video_path" in st.session_state else None)
+        st.session_state.session.current_session_id = None
+        st.session_state.video_path = None
+    try:
+        st.rerun()
+    except Exception:
+        pass
 
 if start_btn and not st.session_state.running:
     st.session_state.running = True
     cap = open_capture(source_str)
+    st.session_state.cap = cap
     if not cap.isOpened():
         st.error("无法打开视频源")
         st.session_state.running = False
@@ -95,40 +118,53 @@ if start_btn and not st.session_state.running:
             sess = SessionManager(camera_id=str(source_str), idle_seconds=int(idle_seconds), roi_json=st.session_state.roi.to_json())
             st.session_state.session = sess
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            while cap.isOpened() and st.session_state.running:
-                ok, frame = cap.read()
-                if not ok:
-                    break
-                annotated, counts, events = pipeline.process(frame, st.session_state.roi)
-                now = time.time()
-                has_roi_det = len(events) > 0
-                if has_roi_det:
-                    sid = st.session_state.session.on_detection(now)
-                    if st.session_state.writer is None:
-                        out_dir = os.path.join("runs", "surgicountboard")
-                        os.makedirs(out_dir, exist_ok=True)
-                        out_path = os.path.join(out_dir, f"session_{sid}.mp4")
-                        st.session_state.video_path = out_path
-                        st.session_state.writer = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
-                    for ts, cls_id, tid, c in events:
-                        if tid is not None and tid >= 0:
-                            add_detection(sid, ts, cls_id, tid, c)
-                ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path if "video_path" in st.session_state else None)
-                if ended is not None and st.session_state.writer is not None:
+            try:
+                while cap.isOpened() and st.session_state.running:
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    annotated, counts, events = pipeline.process(frame, st.session_state.roi)
+                    sf = 960.0 / frame.shape[1] if frame.shape[1] > 960 else 1.0
+                    if sf != 1.0:
+                        dframe = cv2.resize(frame, (int(frame.shape[1] * sf), int(frame.shape[0] * sf)))
+                        dann = cv2.resize(annotated, (int(annotated.shape[1] * sf), int(annotated.shape[0] * sf)))
+                    else:
+                        dframe = frame
+                        dann = annotated
+                    now = time.time()
+                    has_roi_det = len(events) > 0
+                    if has_roi_det:
+                        sid = st.session_state.session.on_detection(now)
+                        if st.session_state.writer is None:
+                            out_dir = os.path.join("runs", "surgicountboard")
+                            os.makedirs(out_dir, exist_ok=True)
+                            out_path = os.path.join(out_dir, f"session_{sid}.mp4")
+                            st.session_state.video_path = out_path
+                            st.session_state.writer = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
+                        for ts, cls_id, tid, c in events:
+                            if tid is not None and tid >= 0:
+                                add_detection(sid, ts, cls_id, tid, c)
+                    ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path if "video_path" in st.session_state else None)
+                    if ended is not None and st.session_state.writer is not None:
+                        close_writer(st.session_state.writer)
+                        st.session_state.writer = None
+                        st.session_state.video_path = None
+                    if st.session_state.writer is not None:
+                        write_frame(st.session_state.writer, annotated)
+                    org_frame_container.image(dframe, channels="BGR", output_format="JPEG")
+                    ann_frame_container.image(dann, channels="BGR", output_format="JPEG")
+                    st.sidebar.write({"当前计数": counts})
+                    time.sleep(0.03)
+                    if stop_btn:
+                        st.session_state.running = False
+            except Exception:
+                st.session_state.running = False
+            finally:
+                if st.session_state.writer is not None:
                     close_writer(st.session_state.writer)
                     st.session_state.writer = None
-                    st.session_state.video_path = None
-                if st.session_state.writer is not None:
-                    write_frame(st.session_state.writer, annotated)
-                org_frame_container.image(frame, channels="BGR")
-                ann_frame_container.image(annotated, channels="BGR")
-                st.sidebar.write({"当前计数": counts})
-                if stop_btn:
-                    st.session_state.running = False
-            if st.session_state.writer is not None:
-                close_writer(st.session_state.writer)
-                st.session_state.writer = None
-            cap.release()
+                cap.release()
+                st.session_state.cap = None
 
 st.subheader("任务列表")
 sessions = list_sessions(50)
