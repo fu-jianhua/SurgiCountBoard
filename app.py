@@ -12,6 +12,24 @@ from core.video import open_writer, write_frame, close_writer
 
 st.set_page_config(page_title="SurgiCountBoard", layout="wide")
 st.title("SurgiCountBoard")
+status_banner = st.empty()
+
+def _status_color(s):
+    if "运行" in s:
+        return "#16a34a"
+    if "启动" in s:
+        return "#f59e0b"
+    if "停止中" in s:
+        return "#ef4444"
+    return "#6b7280"
+
+def _render_status(text=None):
+    t = text or st.session_state.get("status", "已停止")
+    c = _status_color(t)
+    status_banner.markdown(
+        f"<div style=\"padding:8px 12px; border-radius:8px; background:{c}; color:#fff; text-align:center; font-weight:600;\">{t}</div>",
+        unsafe_allow_html=True,
+    )
 
 default_model = os.path.join("e:\\project\\ultralytics\\models\\medical_instruments5\\weights", "best.pt")
 
@@ -53,8 +71,14 @@ if "roi" not in st.session_state:
     st.session_state.roi = None
 if "cap" not in st.session_state:
     st.session_state.cap = None
+if "status" not in st.session_state:
+    st.session_state.status = "已停止"
+
+_render_status()
 
 if stop_btn and st.session_state.running:
+    st.session_state.status = "停止中..."
+    _render_status()
     st.session_state.running = False
     try:
         if st.session_state.cap is not None:
@@ -69,12 +93,12 @@ if stop_btn and st.session_state.running:
         end_session(st.session_state.session.current_session_id, time.time(), st.session_state.video_path if "video_path" in st.session_state else None)
         st.session_state.session.current_session_id = None
         st.session_state.video_path = None
-    try:
-        st.rerun()
-    except Exception:
-        pass
+    st.session_state.status = "已停止"
+    _render_status()
 
 if start_btn and not st.session_state.running:
+    st.session_state.status = "启动中..."
+    _render_status()
     st.session_state.running = True
     cap = open_capture(source_str)
     st.session_state.cap = cap
@@ -90,8 +114,13 @@ if start_btn and not st.session_state.running:
             half = False
         if isinstance(dev, str) and dev.lower() == "cpu":
             half = False
+        @st.cache_resource(show_spinner=False)
+        def _load_model(path):
+            from ultralytics import YOLO
+            return YOLO(path)
+        model_obj = _load_model(model_path)
         pipeline = Pipeline(
-            model_path=model_path,
+            model=model_obj,
             conf=conf,
             iou=iou,
             classes=None,
@@ -118,6 +147,8 @@ if start_btn and not st.session_state.running:
             sess = SessionManager(camera_id=str(source_str), idle_seconds=int(idle_seconds), roi_json=st.session_state.roi.to_json())
             st.session_state.session = sess
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            st.session_state.status = "运行中"
+            _render_status()
             try:
                 while cap.isOpened() and st.session_state.running:
                     ok, frame = cap.read()

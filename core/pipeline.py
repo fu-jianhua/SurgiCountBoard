@@ -6,7 +6,8 @@ from ultralytics import YOLO
 class Pipeline:
     def __init__(
         self,
-        model_path: str,
+        model_path: str = None,
+        model=None,
         conf: float = 0.25,
         iou: float = 0.45,
         classes=None,
@@ -17,7 +18,7 @@ class Pipeline:
         imgsz: int = 640,
         max_det: int = 200,
     ):
-        self.model = YOLO(model_path)
+        self.model = model if model is not None else YOLO(model_path)
         self.conf = conf
         self.iou = iou
         self.classes = classes
