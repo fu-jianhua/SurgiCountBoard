@@ -1,6 +1,8 @@
 import cv2
 import urllib.request
 import numpy as np
+import threading
+import time
 
 class HTTPMJPEGCapture:
     def __init__(self, url: str, timeout: float = 5.0):
@@ -54,6 +56,60 @@ class HTTPMJPEGCapture:
     def get(self, prop_id):
         return 0
 
+class BackgroundCapture:
+    def __init__(self, cap):
+        self.cap = cap
+        self.frame = None
+        self.running = False
+        self.t = None
+
+    def _loop(self):
+        while self.running and self.cap.isOpened():
+            ok, f = self.cap.read()
+            if ok:
+                self.frame = f
+            else:
+                time.sleep(0.01)
+
+    def start(self):
+        if self.running:
+            return
+        self.running = True
+        self.t = threading.Thread(target=self._loop, daemon=True)
+        self.t.start()
+
+    def isOpened(self):
+        return self.cap.isOpened()
+
+    def read(self):
+        if self.frame is not None:
+            return True, self.frame
+        return self.cap.read()
+
+    def release(self):
+        self.running = False
+        if self.t is not None:
+            try:
+                self.t.join(timeout=1.0)
+            except Exception:
+                pass
+        try:
+            self.cap.release()
+        except Exception:
+            pass
+
+    def set(self, prop_id, value):
+        try:
+            return self.cap.set(prop_id, value)
+        except Exception:
+            return False
+
+    def get(self, prop_id):
+        try:
+            return self.cap.get(prop_id)
+        except Exception:
+            return 0
+
 def _set_low_buffer(cap):
     try:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -71,12 +127,20 @@ def open_capture(source: str | int):
             cap = cv2.VideoCapture(s, cv2.CAP_FFMPEG)
             if cap.isOpened():
                 _set_low_buffer(cap)
-                return cap
+                bg = BackgroundCapture(cap)
+                bg.start()
+                return bg
             mjpeg_cap = HTTPMJPEGCapture(s)
-            return mjpeg_cap
+            bg = BackgroundCapture(mjpeg_cap)
+            bg.start()
+            return bg
         cap = cv2.VideoCapture(s)
         _set_low_buffer(cap)
-        return cap
+        bg = BackgroundCapture(cap)
+        bg.start()
+        return bg
     cap = cv2.VideoCapture(source)
     _set_low_buffer(cap)
-    return cap
+    bg = BackgroundCapture(cap)
+    bg.start()
+    return bg
