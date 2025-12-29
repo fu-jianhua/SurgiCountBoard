@@ -16,6 +16,9 @@ st.title("SurgiCountBoard")
 default_model = os.path.join("e:\\project\\ultralytics\\models\\medical_instruments5\\weights", "best.pt")
 
 with st.sidebar:
+    btn_col1, btn_col2 = st.columns(2)
+    start_btn = btn_col1.button("开始")
+    stop_btn = btn_col2.button("停止")
     model_path = st.text_input("模型路径", default_model)
     source_str = st.text_input("视频源", "0")
     conf = st.slider("置信度", 0.0, 1.0, 0.25, 0.01)
@@ -32,8 +35,7 @@ with st.sidebar:
     roi_y1 = st.number_input("ROI y1", min_value=0, value=0, step=1)
     roi_x2 = st.number_input("ROI x2", min_value=0, value=0, step=1)
     roi_y2 = st.number_input("ROI y2", min_value=0, value=0, step=1)
-    start_btn = st.button("开始")
-    stop_btn = st.button("停止")
+    
 
 col1, col2 = st.columns(2)
 org_frame_container = col1.empty()
