@@ -4,13 +4,29 @@ import numpy as np
 from ultralytics import YOLO
 
 class Pipeline:
-    def __init__(self, model_path: str, conf: float = 0.25, iou: float = 0.45, classes=None, use_track: bool = True, tracker: str = "bytetrack.yaml"):
+    def __init__(
+        self,
+        model_path: str,
+        conf: float = 0.25,
+        iou: float = 0.45,
+        classes=None,
+        use_track: bool = True,
+        tracker: str = "bytetrack.yaml",
+        device: str | int = 0,
+        half: bool = True,
+        imgsz: int = 640,
+        max_det: int = 200,
+    ):
         self.model = YOLO(model_path)
         self.conf = conf
         self.iou = iou
         self.classes = classes
         self.use_track = use_track
         self.tracker = tracker
+        self.device = device
+        self.half = half
+        self.imgsz = imgsz
+        self.max_det = max_det
         self.names = list(self.model.names.values()) if isinstance(self.model.names, dict) else self.model.names
 
     def process(self, frame: np.ndarray, roi_rect):
@@ -22,10 +38,23 @@ class Pipeline:
                 classes=self.classes,
                 persist=True,
                 tracker=self.tracker,
+                device=self.device,
+                half=self.half,
+                imgsz=self.imgsz,
+                max_det=self.max_det,
                 verbose=False,
             )
         else:
-            results = self.model(frame, conf=self.conf, iou=self.iou, classes=self.classes)
+            results = self.model(
+                frame,
+                conf=self.conf,
+                iou=self.iou,
+                classes=self.classes,
+                device=self.device,
+                half=self.half,
+                imgsz=self.imgsz,
+                max_det=self.max_det,
+            )
         r = results[0]
         boxes = r.boxes.xyxy.cpu().numpy() if r.boxes is not None else np.empty((0, 4))
         clss = r.boxes.cls.cpu().numpy().astype(int) if r.boxes is not None and r.boxes.cls is not None else np.empty((0,), dtype=int)

@@ -1,6 +1,7 @@
 import os
 import time
 import cv2
+import torch
 import streamlit as st
 from core.source import open_capture
 from core.roi import ROIRect
@@ -19,6 +20,13 @@ with st.sidebar:
     source_str = st.text_input("视频源", "0")
     conf = st.slider("置信度", 0.0, 1.0, 0.25, 0.01)
     iou = st.slider("IoU", 0.0, 1.0, 0.45, 0.01)
+    tracker_sel = st.selectbox("追踪器", ["ByteTrack", "BoT-SORT"], index=0)
+    tracker_yaml_default = "bytetrack.yaml" if tracker_sel == "ByteTrack" else "botsort.yaml"
+    tracker_yaml = st.text_input("追踪器配置(YAML)", tracker_yaml_default)
+    device_inp = st.text_input("设备(0/1 或 cpu)", "0")
+    half = st.checkbox("FP16 半精度", True)
+    imgsz = st.number_input("推理分辨率(imgsz)", min_value=256, max_value=1280, value=640, step=64)
+    max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
     idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
     roi_x1 = st.number_input("ROI x1", min_value=0, value=0, step=1)
     roi_y1 = st.number_input("ROI y1", min_value=0, value=0, step=1)
@@ -49,7 +57,26 @@ if start_btn and not st.session_state.running:
         st.error("无法打开视频源")
         st.session_state.running = False
     else:
-        pipeline = Pipeline(model_path=model_path, conf=conf, iou=iou, classes=None, use_track=True)
+        dev = int(device_inp) if device_inp.isdigit() else device_inp
+        has_cuda = torch.cuda.is_available()
+        if isinstance(dev, int) and not has_cuda:
+            st.warning("未检测到CUDA，已自动切换为CPU并关闭FP16")
+            dev = "cpu"
+            half = False
+        if isinstance(dev, str) and dev.lower() == "cpu":
+            half = False
+        pipeline = Pipeline(
+            model_path=model_path,
+            conf=conf,
+            iou=iou,
+            classes=None,
+            use_track=True,
+            tracker=tracker_yaml,
+            device=dev,
+            half=half,
+            imgsz=int(imgsz),
+            max_det=int(max_det),
+        )
         ret, frame = cap.read()
         if not ret:
             st.error("无法读取帧")
