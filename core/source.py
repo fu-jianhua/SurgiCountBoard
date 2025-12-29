@@ -116,13 +116,27 @@ def _set_low_buffer(cap):
     except Exception:
         pass
 
-def open_capture(source: str | int):
+def open_capture(source: str | int, low_latency: bool = False):
     if isinstance(source, str):
         s = source.strip()
         if s.isdigit():
-            cap = cv2.VideoCapture(int(s))
+            if low_latency:
+                try:
+                    cap = cv2.VideoCapture(int(s), cv2.CAP_DSHOW)
+                except Exception:
+                    cap = cv2.VideoCapture(int(s))
+            else:
+                cap = cv2.VideoCapture(int(s))
             _set_low_buffer(cap)
-            return cap
+            if low_latency:
+                try:
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                except Exception:
+                    pass
+            bg = BackgroundCapture(cap) if low_latency else cap
+            if low_latency and isinstance(bg, BackgroundCapture):
+                bg.start()
+            return bg
         if s.startswith("http://") or s.startswith("https://") or s.startswith("rtsp://"):
             cap = cv2.VideoCapture(s, cv2.CAP_FFMPEG)
             if cap.isOpened():
@@ -139,8 +153,19 @@ def open_capture(source: str | int):
         bg = BackgroundCapture(cap)
         bg.start()
         return bg
-    cap = cv2.VideoCapture(source)
+    if low_latency:
+        try:
+            cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+        except Exception:
+            cap = cv2.VideoCapture(source)
+    else:
+        cap = cv2.VideoCapture(source)
     _set_low_buffer(cap)
-    bg = BackgroundCapture(cap)
+    if low_latency:
+        try:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        except Exception:
+            pass
+    bg = BackgroundCapture(cap) if low_latency else BackgroundCapture(cap)
     bg.start()
     return bg

@@ -49,6 +49,8 @@ with st.sidebar:
     imgsz = st.number_input("推理分辨率(imgsz)", min_value=256, max_value=1280, value=640, step=64)
     max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
     idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
+    track_enabled = st.checkbox("启用跟踪", True)
+    low_latency = st.checkbox("低延迟模式", False)
     roi_x1 = st.number_input("ROI x1", min_value=0, value=0, step=1)
     roi_y1 = st.number_input("ROI y1", min_value=0, value=0, step=1)
     roi_x2 = st.number_input("ROI x2", min_value=0, value=0, step=1)
@@ -100,7 +102,7 @@ if start_btn and not st.session_state.running:
     st.session_state.status = "启动中..."
     _render_status()
     st.session_state.running = True
-    cap = open_capture(source_str)
+    cap = open_capture(source_str, low_latency=low_latency)
     st.session_state.cap = cap
     if not cap.isOpened():
         st.error("无法打开视频源")
@@ -124,11 +126,11 @@ if start_btn and not st.session_state.running:
             conf=conf,
             iou=iou,
             classes=None,
-            use_track=True,
+            use_track=bool(track_enabled),
             tracker=tracker_yaml,
             device=dev,
             half=half,
-            imgsz=int(imgsz),
+            imgsz=int(imgsz if not low_latency else min(imgsz, 512)),
             max_det=int(max_det),
         )
         ret, frame = cap.read()
@@ -185,7 +187,7 @@ if start_btn and not st.session_state.running:
                     org_frame_container.image(dframe, channels="BGR", output_format="JPEG")
                     ann_frame_container.image(dann, channels="BGR", output_format="JPEG")
                     st.sidebar.write({"当前计数": counts})
-                    time.sleep(0.03)
+                    time.sleep(0.01 if low_latency else 0.03)
                     if stop_btn:
                         st.session_state.running = False
             except Exception:
