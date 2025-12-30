@@ -32,7 +32,7 @@ def _render_status(text=None):
         unsafe_allow_html=True,
     )
 
-default_model = os.path.join("e:\\project\\ultralytics\\models\\medical_instruments5\\weights", "best.pt")
+default_model = os.path.join("e:\\project\\ultralytics\\models\\medical_instruments2\\weights", "best.pt")
 
 def _fmt_ts(ts: float | None):
     try:
@@ -197,7 +197,7 @@ if start_btn and not st.session_state.running:
                     ok, frame = cap.read()
                     if not ok:
                         break
-                    annotated, counts, events = pipeline.process(frame, st.session_state.roi)
+                    annotated, counts, events, roi_present = pipeline.process(frame, st.session_state.roi)
                     if len(counts) > 0:
                         overlay = annotated.copy()
                         box_h = 28 * (len(counts) + 1)
@@ -216,7 +216,7 @@ if start_btn and not st.session_state.running:
                         dframe = frame
                         dann = annotated
                     now = time.time()
-                    has_roi_det = len(events) > 0
+                    has_roi_det = bool(roi_present)
                     if has_roi_det:
                         sid = st.session_state.session.on_detection(now)
                         if st.session_state.writer is None:
