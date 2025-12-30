@@ -3,11 +3,12 @@ import time
 import cv2
 import torch
 import streamlit as st
+import pandas as pd
 from core.source import open_capture
 from core.roi import ROIRect
 from core.pipeline import Pipeline
 from core.session import SessionManager
-from core.store import init_db, add_detection, list_sessions, session_stats, range_stats, end_session
+from core.store import init_db, add_detection, list_sessions, session_stats, range_stats, end_session, get_session, search_sessions
 from core.video import open_writer, write_frame, close_writer
 
 st.set_page_config(page_title="SurgiCountBoard", layout="wide")
@@ -37,24 +38,27 @@ with st.sidebar:
     btn_col1, btn_col2 = st.columns(2)
     start_btn = btn_col1.button("开始")
     stop_btn = btn_col2.button("停止")
-    model_path = st.text_input("模型路径", default_model)
-    source_str = st.text_input("视频源", "0")
-    conf = st.slider("置信度", 0.0, 1.0, 0.25, 0.01)
-    iou = st.slider("IoU", 0.0, 1.0, 0.45, 0.01)
-    tracker_sel = st.selectbox("追踪器", ["ByteTrack", "BoT-SORT"], index=0)
-    tracker_yaml_default = "bytetrack.yaml" if tracker_sel == "ByteTrack" else "botsort.yaml"
-    tracker_yaml = st.text_input("追踪器配置(YAML)", tracker_yaml_default)
-    device_inp = st.text_input("设备(0/1 或 cpu)", "0")
-    half = st.checkbox("FP16 半精度", True)
-    imgsz = st.number_input("推理分辨率(imgsz)", min_value=256, max_value=1280, value=640, step=64)
-    max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
-    idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
-    track_enabled = st.checkbox("启用跟踪", True)
-    low_latency = st.checkbox("低延迟模式", False)
-    roi_x1 = st.number_input("ROI x1", min_value=0, value=0, step=1)
-    roi_y1 = st.number_input("ROI y1", min_value=0, value=0, step=1)
-    roi_x2 = st.number_input("ROI x2", min_value=0, value=0, step=1)
-    roi_y2 = st.number_input("ROI y2", min_value=0, value=0, step=1)
+    with st.expander("视频源与设备", expanded=True):
+        model_path = st.text_input("模型路径", default_model)
+        source_str = st.text_input("视频源", "0")
+        device_inp = st.text_input("设备(0/1 或 cpu)", "0")
+        half = st.checkbox("FP16 半精度", True)
+        low_latency = st.checkbox("低延迟模式", False)
+    with st.expander("推理与跟踪", expanded=False):
+        conf = st.slider("置信度", 0.0, 1.0, 0.25, 0.01)
+        iou = st.slider("IoU", 0.0, 1.0, 0.45, 0.01)
+        tracker_sel = st.selectbox("追踪器", ["ByteTrack", "BoT-SORT"], index=0)
+        tracker_yaml_default = "bytetrack.yaml" if tracker_sel == "ByteTrack" else "botsort.yaml"
+        tracker_yaml = st.text_input("追踪器配置(YAML)", tracker_yaml_default)
+        track_enabled = st.checkbox("启用跟踪", True)
+        imgsz = st.number_input("推理分辨率(imgsz)", min_value=256, max_value=1280, value=640, step=64)
+        max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
+    with st.expander("会话与ROI", expanded=False):
+        idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
+        roi_x1 = st.number_input("ROI x1", min_value=0, value=0, step=1)
+        roi_y1 = st.number_input("ROI y1", min_value=0, value=0, step=1)
+        roi_x2 = st.number_input("ROI x2", min_value=0, value=0, step=1)
+        roi_y2 = st.number_input("ROI y2", min_value=0, value=0, step=1)
     
 
 col1, col2 = st.columns(2)
@@ -157,6 +161,16 @@ if start_btn and not st.session_state.running:
                     if not ok:
                         break
                     annotated, counts, events = pipeline.process(frame, st.session_state.roi)
+                    if len(counts) > 0:
+                        overlay = annotated.copy()
+                        box_h = 28 * (len(counts) + 1)
+                        cv2.rectangle(overlay, (8, 8), (280, 8 + box_h), (0, 0, 0), -1)
+                        annotated = cv2.addWeighted(overlay, 0.35, annotated, 0.65, 0)
+                        y = 32
+                        for k in sorted(counts.keys()):
+                            v = counts[k]
+                            cv2.putText(annotated, f"{k}: {v}", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                            y += 26
                     sf = 960.0 / frame.shape[1] if frame.shape[1] > 960 else 1.0
                     if sf != 1.0:
                         dframe = cv2.resize(frame, (int(frame.shape[1] * sf), int(frame.shape[0] * sf)))
@@ -186,7 +200,6 @@ if start_btn and not st.session_state.running:
                         write_frame(st.session_state.writer, annotated)
                     org_frame_container.image(dframe, channels="BGR", output_format="JPEG")
                     ann_frame_container.image(dann, channels="BGR", output_format="JPEG")
-                    st.sidebar.write({"当前计数": counts})
                     time.sleep(0.01 if low_latency else 0.03)
                     if stop_btn:
                         st.session_state.running = False
@@ -199,18 +212,42 @@ if start_btn and not st.session_state.running:
                 cap.release()
                 st.session_state.cap = None
 
-st.subheader("任务列表")
-sessions = list_sessions(50)
-st.table({"id": [x[0] for x in sessions], "camera": [x[1] for x in sessions], "start": [x[2] for x in sessions], "end": [x[3] for x in sessions], "video": [x[4] for x in sessions]})
+tab_tasks, tab_stats = st.tabs(["任务", "统计"])
 
-sid_inp = st.number_input("查看任务统计 id", min_value=0, step=1, value=0)
-if sid_inp > 0:
-    stats = session_stats(int(sid_inp))
-    st.table({"class_id": [x[0] for x in stats], "count": [x[1] for x in stats]})
+with tab_tasks:
+    st.subheader("任务列表")
+    cam_filter = st.text_input("摄像头过滤", "")
+    flt_start_ts = st.number_input("开始时间戳", value=float(time.time() - 86400))
+    flt_end_ts = st.number_input("结束时间戳", value=float(time.time()))
+    page_size = st.slider("每页条数", 10, 200, 20, 10)
+    if "page_tasks" not in st.session_state:
+        st.session_state.page_tasks = 1
+    col_prev, col_lbl, col_page, col_next = st.columns([1,0.2,1,1])
+    if col_prev.button("上一页", use_container_width=True):
+        st.session_state.page_tasks = max(1, st.session_state.page_tasks - 1)
+    col_lbl.markdown("<div style='line-height:38px; font-weight:600;'>页码：</div>", unsafe_allow_html=True)
+    page_val = col_page.number_input("页码", min_value=1, value=int(st.session_state.page_tasks), step=1, label_visibility="collapsed")
+    if col_next.button("下一页", use_container_width=True):
+        st.session_state.page_tasks = int(page_val) + 1
+    else:
+        st.session_state.page_tasks = int(page_val)
+    offset = int((st.session_state.page_tasks - 1) * page_size)
+    sessions = search_sessions(cam_filter.strip() or None, flt_start_ts, flt_end_ts, offset, int(page_size))
+    df = pd.DataFrame([{ "id": x[0], "camera": x[1], "start": x[2], "end": x[3], "video": x[4]} for x in sessions])
+    st.dataframe(df, use_container_width=True, height=420)
+    sid_options = [int(x[0]) for x in sessions]
+    sid_sel = st.selectbox("选择任务", sid_options, index=0 if len(sid_options) > 0 else None)
+    if sid_sel:
+        ss = get_session(int(sid_sel))
+        stats = session_stats(int(sid_sel))
+        st.table({"class_id": [x[0] for x in stats], "count": [x[1] for x in stats]})
+        if ss and ss[5]:
+            st.video(ss[5])
 
-st.subheader("时间段统计")
-start_ts = st.number_input("开始时间戳", value=float(time.time() - 3600))
-end_ts = st.number_input("结束时间戳", value=float(time.time()))
-if end_ts > start_ts:
-    rstats = range_stats(start_ts, end_ts)
-    st.table({"class_id": [x[0] for x in rstats], "count": [x[1] for x in rstats]})
+with tab_stats:
+    st.subheader("时间段统计")
+    start_ts2 = st.number_input("开始时间戳(统计)", value=float(time.time() - 3600))
+    end_ts2 = st.number_input("结束时间戳(统计)", value=float(time.time()))
+    if end_ts2 > start_ts2:
+        rstats = range_stats(start_ts2, end_ts2)
+        st.table({"class_id": [x[0] for x in rstats], "count": [x[1] for x in rstats]})

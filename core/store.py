@@ -84,3 +84,32 @@ def range_stats(start_ts: float, end_ts: float):
         (start_ts, end_ts),
     )
     return c.fetchall()
+
+def get_session(session_id: int):
+    init_db()
+    c = CONN.cursor()
+    c.execute(
+        "SELECT id, camera_id, start_ts, end_ts, roi, video_path FROM sessions WHERE id=?",
+        (session_id,),
+    )
+    return c.fetchone()
+
+def search_sessions(camera_id: str | None = None, start_ts: float | None = None, end_ts: float | None = None, offset: int = 0, limit: int = 50):
+    init_db()
+    clauses = []
+    params = []
+    if camera_id:
+        clauses.append("camera_id LIKE ?")
+        params.append(f"%{camera_id}%")
+    if start_ts is not None:
+        clauses.append("start_ts >= ?")
+        params.append(start_ts)
+    if end_ts is not None:
+        clauses.append("start_ts <= ?")
+        params.append(end_ts)
+    where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = f"SELECT id, camera_id, start_ts, end_ts, video_path FROM sessions{where_sql} ORDER BY start_ts DESC LIMIT ? OFFSET ?"
+    params.extend([limit, max(0, offset)])
+    c = CONN.cursor()
+    c.execute(sql, tuple(params))
+    return c.fetchall()
