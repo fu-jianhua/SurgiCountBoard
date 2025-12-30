@@ -70,9 +70,6 @@ with st.sidebar:
     with st.expander("推理与跟踪", expanded=False):
         conf = st.slider("置信度", 0.0, 1.0, 0.25, 0.01)
         iou = st.slider("IoU", 0.0, 1.0, 0.45, 0.01)
-        tracker_sel = st.selectbox("追踪器", ["ByteTrack", "BoT-SORT"], index=0)
-        tracker_yaml_default = "bytetrack.yaml" if tracker_sel == "ByteTrack" else "botsort.yaml"
-        tracker_yaml = st.text_input("追踪器配置(YAML)", tracker_yaml_default)
         track_enabled = st.checkbox("启用跟踪", True)
         imgsz = st.number_input("推理分辨率(imgsz)", min_value=256, max_value=1280, value=640, step=64)
         max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
@@ -165,7 +162,7 @@ if start_btn and not st.session_state.running:
             iou=iou,
             classes=None,
             use_track=bool(track_enabled),
-            tracker=tracker_yaml,
+            tracker=os.path.join(os.path.dirname(__file__), "bytetrack.yaml"),
             device=dev,
             half=half,
             imgsz=int(imgsz if not low_latency else min(imgsz, 512)),
