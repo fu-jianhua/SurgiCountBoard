@@ -311,6 +311,9 @@ with tab_tasks:
                 "name": [_cn_name(int(x[0])) for x in stats],
                 "count": [x[1] for x in stats],
             })
-            st.dataframe(df_stats, use_container_width=True, hide_index=True, height=max(140, min(360, 40 + len(df_stats) * 32)))
-            if ss and ss[5]:
-                st.video(ss[5])
+            detail_col1, detail_col2 = st.columns(2)
+            with detail_col1:
+                st.dataframe(df_stats, use_container_width=True, hide_index=True, height=max(140, min(360, 40 + len(df_stats) * 32)))
+            with detail_col2:
+                if ss and ss[5]:
+                    st.video(ss[5])
