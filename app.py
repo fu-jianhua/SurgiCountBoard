@@ -267,6 +267,7 @@ with tab_tasks:
         tbl_h = max(180, min(420, 40 + len(df) * 32))
         st.dataframe(df, use_container_width=True, height=tbl_h, hide_index=True)
         sid_options = [int(x[0]) for x in sessions]
+        st.subheader("任务详情")
         sid_sel = st.selectbox("选择任务", sid_options, index=0)
         if sid_sel:
             ss = get_session(int(sid_sel))
