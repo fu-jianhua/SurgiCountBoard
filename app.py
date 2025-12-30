@@ -222,6 +222,7 @@ with tab_tasks:
     page_size = st.slider("每页条数", 10, 200, 20, 10)
     if "page_tasks" not in st.session_state:
         st.session_state.page_tasks = 1
+    prev_page_tasks = int(st.session_state.page_tasks)
     col_prev, col_lbl, col_page, col_next = st.columns([1,0.2,1,1])
     if col_prev.button("上一页", use_container_width=True):
         st.session_state.page_tasks = max(1, st.session_state.page_tasks - 1)
@@ -233,16 +234,29 @@ with tab_tasks:
         st.session_state.page_tasks = int(page_val)
     offset = int((st.session_state.page_tasks - 1) * page_size)
     sessions = search_sessions(cam_filter.strip() or None, flt_start_ts, flt_end_ts, offset, int(page_size))
-    df = pd.DataFrame([{ "id": x[0], "camera": x[1], "start": x[2], "end": x[3], "video": x[4]} for x in sessions])
-    st.dataframe(df, use_container_width=True, height=420)
-    sid_options = [int(x[0]) for x in sessions]
-    sid_sel = st.selectbox("选择任务", sid_options, index=0 if len(sid_options) > 0 else None)
-    if sid_sel:
-        ss = get_session(int(sid_sel))
-        stats = session_stats(int(sid_sel))
-        st.table({"class_id": [x[0] for x in stats], "count": [x[1] for x in stats]})
-        if ss and ss[5]:
-            st.video(ss[5])
+    if len(sessions) == 0:
+        st.session_state.page_tasks = prev_page_tasks
+    if len(sessions) == 0:
+        st.markdown(
+            """
+            <div style="border:1px dashed #d1d5db; border-radius:10px; padding:18px; background:#f9fafb;">
+              <div style="font-size:18px; font-weight:600; color:#111827;">暂无任务数据</div>
+              <div style="margin-top:8px; color:#6b7280;">首次使用请：1) 在左侧设置模型与视频源；2) 点击“开始”；3) ROI内出现检测后会自动生成任务与录像。</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        df = pd.DataFrame([{ "id": x[0], "camera": x[1], "start": x[2], "end": x[3], "video": x[4]} for x in sessions])
+        st.dataframe(df, use_container_width=True, height=420)
+        sid_options = [int(x[0]) for x in sessions]
+        sid_sel = st.selectbox("选择任务", sid_options, index=0)
+        if sid_sel:
+            ss = get_session(int(sid_sel))
+            stats = session_stats(int(sid_sel))
+            st.table({"class_id": [x[0] for x in stats], "count": [x[1] for x in stats]})
+            if ss and ss[5]:
+                st.video(ss[5])
 
 with tab_stats:
     st.subheader("时间段统计")
