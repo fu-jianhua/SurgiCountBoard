@@ -45,7 +45,7 @@ with st.sidebar:
         half = st.checkbox("FP16 半精度", True)
         low_latency = st.checkbox("低延迟模式", False)
     with st.expander("推理与跟踪", expanded=False):
-        conf = st.slider("置信度", 0.0, 1.0, 0.25, 0.01)
+        conf = st.slider("置信度", 0.0, 1.0, 0.55, 0.01)
         iou = st.slider("IoU", 0.0, 1.0, 0.45, 0.01)
         tracker_sel = st.selectbox("追踪器", ["ByteTrack", "BoT-SORT"], index=0)
         tracker_yaml_default = "bytetrack.yaml" if tracker_sel == "ByteTrack" else "botsort.yaml"
