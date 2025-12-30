@@ -313,7 +313,12 @@ with tab_tasks:
             })
             detail_col1, detail_col2 = st.columns(2)
             with detail_col1:
-                st.dataframe(df_stats, use_container_width=True, hide_index=True, height=max(140, min(360, 40 + len(df_stats) * 32)))
+                st.dataframe(
+                    df_stats,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=max(140, min(360, 40 + (len(df_stats) + 1) * 32)),
+                )
             with detail_col2:
                 if ss and ss[5]:
                     st.video(ss[5])
