@@ -265,13 +265,15 @@ with tab_tasks:
         )
     else:
         df = pd.DataFrame([{ "id": x[0], "camera": x[1], "start": x[2], "end": x[3], "video": x[4]} for x in sessions])
-        st.dataframe(df, use_container_width=True, height=420)
+        tbl_h = max(180, min(420, 40 + len(df) * 32))
+        st.dataframe(df, use_container_width=True, height=tbl_h, hide_index=True)
         sid_options = [int(x[0]) for x in sessions]
         sid_sel = st.selectbox("选择任务", sid_options, index=0)
         if sid_sel:
             ss = get_session(int(sid_sel))
             stats = session_stats(int(sid_sel))
-            st.table({"class_id": [x[0] for x in stats], "count": [x[1] for x in stats]})
+            df_stats = pd.DataFrame({"class_id": [x[0] for x in stats], "count": [x[1] for x in stats]})
+            st.dataframe(df_stats, use_container_width=True, hide_index=True, height=max(140, min(360, 40 + len(df_stats) * 32)))
             if ss and ss[5]:
                 st.video(ss[5])
 
@@ -281,4 +283,5 @@ with tab_stats:
     end_ts2 = st.number_input("结束时间戳(统计)", value=float(time.time()))
     if end_ts2 > start_ts2:
         rstats = range_stats(start_ts2, end_ts2)
-        st.table({"class_id": [x[0] for x in rstats], "count": [x[1] for x in rstats]})
+        df_r = pd.DataFrame({"class_id": [x[0] for x in rstats], "count": [x[1] for x in rstats]})
+        st.dataframe(df_r, use_container_width=True, hide_index=True, height=max(140, min(360, 40 + len(df_r) * 32)))
