@@ -29,6 +29,7 @@ def init_db():
         "CREATE TABLE IF NOT EXISTS detections (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER, ts REAL, class_id INTEGER, track_id INTEGER, conf REAL)"
     )
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_det ON detections(session_id, class_id, track_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_detections_ts ON detections(ts)")
     CONN.commit()
 
 def start_session(camera_id: str, roi: str, start_ts: float = None) -> int:
