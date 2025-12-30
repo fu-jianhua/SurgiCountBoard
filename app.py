@@ -34,6 +34,23 @@ def _render_status(text=None):
 
 default_model = os.path.join("e:\\project\\ultralytics\\models\\medical_instruments5\\weights", "best.pt")
 
+def _fmt_ts(ts: float | None):
+    try:
+        if ts is None or ts == 0:
+            return ""
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
+    except Exception:
+        return ""
+
+def _parse_dt(s: str | None):
+    try:
+        if not s:
+            return None
+        t = time.strptime(s.strip(), "%Y-%m-%d %H:%M:%S")
+        return float(time.mktime(t))
+    except Exception:
+        return None
+
 @st.cache_resource(show_spinner=False)
 def _get_model_names(path: str):
     from ultralytics import YOLO
@@ -240,9 +257,6 @@ tab_tasks = st.container()
 
 with tab_tasks:
     st.subheader("任务列表")
-    cam_filter = st.text_input("摄像头过滤", "")
-    flt_start_ts = st.number_input("开始时间戳", value=float(time.time() - 86400))
-    flt_end_ts = st.number_input("结束时间戳", value=float(time.time()))
     if "page_tasks" not in st.session_state:
         st.session_state.page_tasks = 1
     prev_page_tasks = int(st.session_state.page_tasks)
@@ -256,7 +270,7 @@ with tab_tasks:
     else:
         st.session_state.page_tasks = int(page_val)
     offset = int((st.session_state.page_tasks - 1) * 10)
-    sessions = search_sessions(cam_filter.strip() or None, flt_start_ts, flt_end_ts, offset, int(10))
+    sessions = search_sessions(None, None, None, offset, int(10))
     if len(sessions) == 0:
         st.session_state.page_tasks = prev_page_tasks
     if len(sessions) == 0:
@@ -274,7 +288,7 @@ with tab_tasks:
             unsafe_allow_html=True,
         )
     else:
-        df = pd.DataFrame([{ "id": x[0], "camera": x[1], "start": x[2], "end": x[3], "video": x[4]} for x in sessions])
+        df = pd.DataFrame([{ "id": x[0], "camera": x[1], "start": _fmt_ts(x[2]), "end": _fmt_ts(x[3]), "video": x[4]} for x in sessions])
         tbl_h = max(180, min(420, 40 + len(df) * 32))
         st.dataframe(df, use_container_width=True, height=tbl_h, hide_index=True)
         sid_options = [int(x[0]) for x in sessions]
