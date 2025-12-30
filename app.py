@@ -225,14 +225,13 @@ if start_btn and not st.session_state.running:
                 cap.release()
                 st.session_state.cap = None
 
-tab_tasks, tab_stats = st.tabs(["任务", "统计"])
+tab_tasks = st.container()
 
 with tab_tasks:
     st.subheader("任务列表")
     cam_filter = st.text_input("摄像头过滤", "")
     flt_start_ts = st.number_input("开始时间戳", value=float(time.time() - 86400))
     flt_end_ts = st.number_input("结束时间戳", value=float(time.time()))
-    page_size = st.slider("每页条数", 10, 200, 20, 10)
     if "page_tasks" not in st.session_state:
         st.session_state.page_tasks = 1
     prev_page_tasks = int(st.session_state.page_tasks)
@@ -245,8 +244,8 @@ with tab_tasks:
         st.session_state.page_tasks = int(page_val) + 1
     else:
         st.session_state.page_tasks = int(page_val)
-    offset = int((st.session_state.page_tasks - 1) * page_size)
-    sessions = search_sessions(cam_filter.strip() or None, flt_start_ts, flt_end_ts, offset, int(page_size))
+    offset = int((st.session_state.page_tasks - 1) * 10)
+    sessions = search_sessions(cam_filter.strip() or None, flt_start_ts, flt_end_ts, offset, int(10))
     if len(sessions) == 0:
         st.session_state.page_tasks = prev_page_tasks
     if len(sessions) == 0:
@@ -276,12 +275,3 @@ with tab_tasks:
             st.dataframe(df_stats, use_container_width=True, hide_index=True, height=max(140, min(360, 40 + len(df_stats) * 32)))
             if ss and ss[5]:
                 st.video(ss[5])
-
-with tab_stats:
-    st.subheader("时间段统计")
-    start_ts2 = st.number_input("开始时间戳(统计)", value=float(time.time() - 3600))
-    end_ts2 = st.number_input("结束时间戳(统计)", value=float(time.time()))
-    if end_ts2 > start_ts2:
-        rstats = range_stats(start_ts2, end_ts2)
-        df_r = pd.DataFrame({"class_id": [x[0] for x in rstats], "count": [x[1] for x in rstats]})
-        st.dataframe(df_r, use_container_width=True, hide_index=True, height=max(140, min(360, 40 + len(df_r) * 32)))
