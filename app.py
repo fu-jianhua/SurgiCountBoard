@@ -34,6 +34,12 @@ def _render_status(text=None):
 
 default_model = os.path.join("e:\\project\\ultralytics\\models\\medical_instruments5\\weights", "best.pt")
 
+@st.cache_resource(show_spinner=False)
+def _get_model_names(path: str):
+    from ultralytics import YOLO
+    m = YOLO(path)
+    return list(m.names.values()) if isinstance(m.names, dict) else m.names
+
 with st.sidebar:
     btn_col1, btn_col2 = st.columns(2)
     start_btn = btn_col1.button("开始")
@@ -132,6 +138,10 @@ if start_btn and not st.session_state.running:
             from ultralytics import YOLO
             return YOLO(path)
         model_obj = _load_model(model_path)
+        try:
+            st.session_state.model_names = list(model_obj.names.values()) if isinstance(model_obj.names, dict) else model_obj.names
+        except Exception:
+            st.session_state.model_names = None
         pipeline = Pipeline(
             model=model_obj,
             conf=conf,
@@ -199,6 +209,7 @@ if start_btn and not st.session_state.running:
                             out_dir = os.path.join("runs", "surgicountboard")
                             os.makedirs(out_dir, exist_ok=True)
                             out_path = os.path.join(out_dir, f"session_{sid}.mp4")
+                            out_path = os.path.abspath(out_path)
                             st.session_state.video_path = out_path
                             st.session_state.writer = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
                         for ts, cls_id, tid, c in events:
@@ -272,7 +283,34 @@ with tab_tasks:
         if sid_sel:
             ss = get_session(int(sid_sel))
             stats = session_stats(int(sid_sel))
-            df_stats = pd.DataFrame({"class_id": [x[0] for x in stats], "count": [x[1] for x in stats]})
+            names_cn_map = {
+                "tray": "托盘",
+                "forceps_01": "镊子01",
+                "forceps_02": "镊子02",
+                "scissors_01": "剪刀01",
+                "scissors_02": "剪刀02",
+                "scissors_03": "剪刀03",
+                "scissors_04": "剪刀04",
+                "scissors_05": "剪刀05",
+                "scissors_06": "剪刀06",
+            }
+            try:
+                model_names = st.session_state.get("model_names")
+                if not model_names:
+                    model_names = _get_model_names(model_path)
+            except Exception:
+                model_names = None
+            def _cn_name(cid: int):
+                if isinstance(model_names, (list, tuple)) and cid < len(model_names):
+                    en = model_names[cid]
+                else:
+                    en = str(cid)
+                return names_cn_map.get(en, en)
+            df_stats = pd.DataFrame({
+                "class_id": [int(x[0]) for x in stats],
+                "name": [_cn_name(int(x[0])) for x in stats],
+                "count": [x[1] for x in stats],
+            })
             st.dataframe(df_stats, use_container_width=True, hide_index=True, height=max(140, min(360, 40 + len(df_stats) * 32)))
             if ss and ss[5]:
                 st.video(ss[5])
