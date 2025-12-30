@@ -241,7 +241,11 @@ with tab_tasks:
             """
             <div style="border:1px dashed #d1d5db; border-radius:10px; padding:18px; background:#f9fafb;">
               <div style="font-size:18px; font-weight:600; color:#111827;">暂无任务数据</div>
-              <div style="margin-top:8px; color:#6b7280;">首次使用请：1) 在左侧设置模型与视频源；2) 点击“开始”；3) ROI内出现检测后会自动生成任务与录像。</div>
+              <ol style="margin:10px 0 0; color:#6b7280; padding-left:22px;">
+                <li style="margin:6px 0;">在左侧设置模型与视频源</li>
+                <li style="margin:6px 0;">点击“开始”</li>
+                <li style="margin:6px 0;">ROI内出现检测后会自动生成任务与录像</li>
+              </ol>
             </div>
             """,
             unsafe_allow_html=True,
