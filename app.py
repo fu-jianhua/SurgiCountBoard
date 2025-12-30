@@ -111,6 +111,13 @@ if start_btn and not st.session_state.running:
     if not cap.isOpened():
         st.error("无法打开视频源")
         st.session_state.running = False
+        try:
+            cap.release()
+        except Exception:
+            pass
+        st.session_state.cap = None
+        st.session_state.status = "已停止"
+        _render_status()
     else:
         dev = int(device_inp) if device_inp.isdigit() else device_inp
         has_cuda = torch.cuda.is_available()
@@ -141,7 +148,13 @@ if start_btn and not st.session_state.running:
         if not ret:
             st.error("无法读取帧")
             st.session_state.running = False
-            cap.release()
+            try:
+                cap.release()
+            except Exception:
+                pass
+            st.session_state.cap = None
+            st.session_state.status = "已停止"
+            _render_status()
         else:
             h, w = frame.shape[:2]
             if roi_x2 == 0 and roi_y2 == 0:
