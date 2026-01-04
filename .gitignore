@@ -7,6 +7,6 @@ __pycache__/*
 *.pyc
 .vscode
 *.py[cod]
-test.py
+test/
 *.png
 *.db

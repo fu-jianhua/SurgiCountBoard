@@ -32,7 +32,8 @@ def _render_status(text=None):
         unsafe_allow_html=True,
     )
 
-default_model = os.path.join("e:\\project\\ultralytics\\models\\medical_instruments2\\weights", "best.pt")
+# default_model = os.path.join("e:\\project\\ultralytics\\models\\medical_instruments2\\weights", "best.pt")
+default_model = os.path.join("e:\\project\\ultralytics\\runs\\train\\medical_yolo11m\\weights", "best.pt")
 
 def _fmt_ts(ts: float | None):
     try:
