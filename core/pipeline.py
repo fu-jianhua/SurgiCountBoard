@@ -28,6 +28,8 @@ class Pipeline:
         stable_frames: int = 5,
         seg_model: str | object | None = None,
         frame_rate: float = 30.0,
+        agnostic_nms: bool = True,
+        dedup_iou: float = 0.65,
     ):
         self.model = model if model is not None else YOLO(model_path)
         self.conf = conf
@@ -37,6 +39,8 @@ class Pipeline:
         self.half = half
         self.imgsz = imgsz
         self.max_det = max_det
+        self.agnostic_nms = bool(agnostic_nms)
+        self.dedup_iou = float(dedup_iou)
         self.names = list(self.model.names.values()) if isinstance(self.model.names, dict) else self.model.names
         n_colors = max(1, len(self.names)) if isinstance(self.names, (list, tuple)) else 1
         self._colors = []
@@ -92,6 +96,24 @@ class Pipeline:
         denom = area_box + area_boxes - inter_area + 1e-9
         return inter_area / denom
 
+    def _dedup_dets(self, boxes: np.ndarray, clss: np.ndarray, confs: np.ndarray):
+        if boxes.size == 0:
+            return boxes, clss, confs
+        cfs = confs if confs.size == boxes.shape[0] else np.ones((boxes.shape[0],), dtype=float) * 0.5
+        order = np.argsort(-cfs)
+        keep = []
+        for i in order:
+            b = boxes[i]
+            if len(keep) == 0:
+                keep.append(i)
+                continue
+            prev = boxes[keep]
+            ious = self._bbox_iou(b, prev)
+            if np.all(ious <= float(self.dedup_iou)):
+                keep.append(i)
+        keep = np.array(keep, dtype=int)
+        return boxes[keep], clss[keep] if clss.size == boxes.shape[0] else clss, cfs[keep]
+
     def process(self, frame: np.ndarray, roi_rect):
         results = self.model(
             frame,
@@ -101,12 +123,15 @@ class Pipeline:
             half=self.half,
             imgsz=self.imgsz,
             max_det=self.max_det,
+            agnostic_nms=self.agnostic_nms,
         )
         r = results[0]
         boxes = r.boxes.xyxy.cpu().numpy() if r.boxes is not None else np.empty((0, 4))
         clss = r.boxes.cls.cpu().numpy().astype(int) if r.boxes is not None and r.boxes.cls is not None else np.empty((0,), dtype=int)
         ids = r.boxes.id.cpu().numpy().astype(int) if r.boxes is not None and r.boxes.id is not None else np.empty((0,), dtype=int)
         confs = r.boxes.conf.cpu().numpy() if r.boxes is not None and r.boxes.conf is not None else np.empty((0,), dtype=float)
+        if boxes is not None and boxes.size > 0:
+            boxes, clss, confs = self._dedup_dets(boxes, clss if clss is not None else np.empty((0,), dtype=int), confs if confs is not None else np.empty((0,), dtype=float))
         ts = time.time()
         counts = {}
         events = []
