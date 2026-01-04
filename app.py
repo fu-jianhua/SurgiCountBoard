@@ -75,10 +75,17 @@ with st.sidebar:
         max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
     with st.expander("会话与ROI", expanded=False):
         idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
-        roi_x1 = st.number_input("ROI x1", min_value=0, value=0, step=1)
-        roi_y1 = st.number_input("ROI y1", min_value=0, value=0, step=1)
-        roi_x2 = st.number_input("ROI x2", min_value=0, value=0, step=1)
-        roi_y2 = st.number_input("ROI y2", min_value=0, value=0, step=1)
+        roi_width_pct = st.number_input("默认 ROI 宽度(%)", min_value=5, max_value=100, value=100, step=1)
+        move_step_pct = st.number_input("移动步长(%)", min_value=1, max_value=50, value=5, step=1)
+        roi_btn_col_l, roi_btn_col_r = st.columns(2)
+        roi_left_btn = roi_btn_col_l.button("ROI 左移")
+        roi_right_btn = roi_btn_col_r.button("ROI 右移")
+        if "roi_offset_pct" not in st.session_state:
+            st.session_state.roi_offset_pct = 0.0
+        if roi_left_btn:
+            st.session_state.roi_offset_pct = max(-0.9, float(st.session_state.roi_offset_pct) - float(move_step_pct) / 100.0)
+        if roi_right_btn:
+            st.session_state.roi_offset_pct = min(0.9, float(st.session_state.roi_offset_pct) + float(move_step_pct) / 100.0)
     
 
 col1, col2 = st.columns(2)
@@ -160,13 +167,13 @@ if start_btn and not st.session_state.running:
             model=model_obj,
             conf=conf,
             iou=iou,
-            classes=None,
             use_track=bool(track_enabled),
-            tracker=os.path.join(os.path.dirname(__file__), "bytetrack.yaml"),
             device=dev,
             half=half,
             imgsz=int(imgsz if not low_latency else min(imgsz, 512)),
             max_det=int(max_det),
+            frame_rate=float(cap.get(cv2.CAP_PROP_FPS) or 30.0),
+            seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt"),
         )
         ret, frame = cap.read()
         if not ret:
@@ -181,12 +188,12 @@ if start_btn and not st.session_state.running:
             _render_status()
         else:
             h, w = frame.shape[:2]
-            if roi_x2 == 0 and roi_y2 == 0:
-                st.session_state.roi = ROIRect(0, 0, w - 1, h - 1)
-            else:
-                r = ROIRect(int(roi_x1), int(roi_y1), int(roi_x2), int(roi_y2))
-                r.clamp(w, h)
-                st.session_state.roi = r
+            rw = max(1, int(w * (float(roi_width_pct) / 100.0)))
+            base_x1 = w - rw
+            offset = int(w * float(st.session_state.roi_offset_pct))
+            x1 = max(0, min(w - rw, base_x1 + offset))
+            x2 = x1 + rw - 1
+            st.session_state.roi = ROIRect(int(x1), 0, int(x2), h - 1)
             sess = SessionManager(camera_id=str(source_str), idle_seconds=int(idle_seconds), roi_json=st.session_state.roi.to_json())
             st.session_state.session = sess
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)

@@ -10,3 +10,4 @@ __pycache__/*
 test.py
 *.png
 *.db
+*.pt

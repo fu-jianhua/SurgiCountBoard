@@ -1,7 +1,15 @@
 import time
 import cv2
 import numpy as np
+from collections import Counter
 from ultralytics import YOLO
+import os
+import sys
+
+_BT_ROOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ByteTrack")
+if _BT_ROOT not in sys.path:
+    sys.path.insert(0, _BT_ROOT)
+from yolox.tracker.byte_tracker import BYTETracker   
 
 class Pipeline:
     def __init__(
@@ -10,52 +18,68 @@ class Pipeline:
         model=None,
         conf: float = 0.25,
         iou: float = 0.45,
-        classes=None,
         use_track: bool = True,
-        tracker: str = "bytetrack.yaml",
         device: str | int = 0,
         half: bool = True,
         imgsz: int = 640,
         max_det: int = 200,
+        line_pos: float = 0.6,
+        stable_frames: int = 5,
+        seg_model: str | object | None = None,
+        frame_rate: float = 30.0,
     ):
         self.model = model if model is not None else YOLO(model_path)
         self.conf = conf
         self.iou = iou
-        self.classes = classes
         self.use_track = use_track
-        self.tracker = tracker
         self.device = device
         self.half = half
         self.imgsz = imgsz
         self.max_det = max_det
         self.names = list(self.model.names.values()) if isinstance(self.model.names, dict) else self.model.names
+        self.line_pos = float(max(0.0, min(1.0, line_pos)))
+        self.stable_frames = int(max(1, stable_frames))
+        self.seg_model = None
+        if seg_model is not None:
+            self.seg_model = seg_model if not isinstance(seg_model, str) else YOLO(seg_model)
+        self._tracks = {}
+        self._frame_idx = 0
+        self._bt = None
+        if self.use_track:
+            class _BTArgs:
+                track_thresh = 0.25
+                track_buffer = 30
+                match_thresh = 0.8
+                aspect_ratio_thresh = 3.0
+                min_box_area = 1.0
+                mot20 = False
+            try:
+                self._bt = BYTETracker(_BTArgs(), frame_rate=float(frame_rate))
+            except Exception:
+                self._bt = None
+
+    def _bbox_iou(self, box: np.ndarray, boxes: np.ndarray):
+        if boxes.size == 0:
+            return np.zeros((0,), dtype=float)
+        xy_max = np.minimum(boxes[:, 2:], box[2:])
+        xy_min = np.maximum(boxes[:, :2], box[:2])
+        inter = np.clip(xy_max - xy_min, a_min=0, a_max=np.inf)
+        inter_area = inter[:, 0] * inter[:, 1]
+        area_boxes = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+        area_box = (box[2] - box[0]) * (box[3] - box[1])
+        denom = area_box + area_boxes - inter_area + 1e-9
+        return inter_area / denom
 
     def process(self, frame: np.ndarray, roi_rect):
-        if self.use_track:
-            results = self.model.track(
-                frame,
-                conf=self.conf,
-                iou=self.iou,
-                classes=self.classes,
-                persist=True,
-                tracker=self.tracker,
-                device=self.device,
-                half=self.half,
-                imgsz=self.imgsz,
-                max_det=self.max_det,
-                verbose=False,
-            )
-        else:
-            results = self.model(
-                frame,
-                conf=self.conf,
-                iou=self.iou,
-                classes=self.classes,
-                device=self.device,
-                half=self.half,
-                imgsz=self.imgsz,
-                max_det=self.max_det,
-            )
+        results = self.model(
+            frame,
+            conf=self.conf,
+            iou=self.iou,
+            device=self.device,
+            half=self.half,
+            imgsz=self.imgsz,
+            max_det=self.max_det,
+        )
         r = results[0]
         boxes = r.boxes.xyxy.cpu().numpy() if r.boxes is not None else np.empty((0, 4))
         clss = r.boxes.cls.cpu().numpy().astype(int) if r.boxes is not None and r.boxes.cls is not None else np.empty((0,), dtype=int)
@@ -64,14 +88,92 @@ class Pipeline:
         ts = time.time()
         counts = {}
         events = []
-        for i in range(len(boxes)):
-            x1, y1, x2, y2 = boxes[i]
-            cx = (x1 + x2) / 2.0
-            cy = (y1 + y2) / 2.0
-            if roi_rect is None or roi_rect.contains(cx, cy):
-                name = self.names[clss[i]] if clss[i] < len(self.names) else str(clss[i])
-                counts[name] = counts.get(name, 0) + 1
-                events.append((ts, int(clss[i]), int(ids[i]) if i < len(ids) else -1, float(confs[i]) if i < len(confs) else 0.0))
+        self._frame_idx += 1
+        h, w = frame.shape[:2]
+        if roi_rect is not None and not hasattr(roi_rect, "points"):
+            line_x = int(roi_rect.x1 + self.line_pos * (roi_rect.x2 - roi_rect.x1))
+        else:
+            line_x = int(self.line_pos * w)
+        if self.use_track and self._bt is not None:
+            outputs = np.empty((len(boxes), 6), dtype=float)
+            if len(boxes) > 0:
+                outputs[:, 0:4] = boxes
+                outputs[:, 4] = confs if len(confs) == len(boxes) else np.ones((len(boxes),)) * 0.5
+                outputs[:, 5] = clss if len(clss) == len(boxes) else np.zeros((len(boxes),))
+            det5 = outputs[:, :5] if len(boxes) > 0 else np.empty((0, 5), dtype=float)
+            try:
+                tracks = self._bt.update(det5, img_info=frame.shape, img_size=frame.shape)
+            except Exception:
+                tracks = []
+            for t in tracks:
+                tlbr = t.tlbr
+                ious = self._bbox_iou(tlbr, outputs[:, :4]) if len(outputs) > 0 else np.zeros((0,), dtype=float)
+                det_idx = int(np.argmax(ious)) if ious.size > 0 else -1
+                if det_idx >= 0:
+                    x1, y1, x2, y2, c, cls_id = outputs[det_idx]
+                    cx = (x1 + x2) / 2.0
+                    cy = (y1 + y2) / 2.0
+                else:
+                    x1, y1, x2, y2 = tlbr
+                    cx = (x1 + x2) / 2.0
+                    cy = (y1 + y2) / 2.0
+                    c = 0.0
+                    cls_id = -1
+                tid = int(getattr(t, "track_id", -1))
+                if tid < 0:
+                    continue
+                st = self._tracks.get(tid)
+                if st is None:
+                    patch_x1 = max(0, int(x1))
+                    patch_y1 = max(0, int(y1))
+                    patch_x2 = min(w - 1, int(x2))
+                    patch_y2 = min(h - 1, int(y2))
+                    seg_pass = None
+                    if self.seg_model is not None and patch_x2 > patch_x1 and patch_y2 > patch_y1:
+                        patch = frame[patch_y1:patch_y2, patch_x1:patch_x2]
+                        try:
+                            seg_res = self.seg_model(patch, conf=0.2, device=self.device, half=self.half, imgsz=self.imgsz, verbose=False)
+                            rr = seg_res[0]
+                            has_det = (rr.boxes is not None and len(rr.boxes) > 0) or (getattr(rr, "masks", None) is not None and rr.masks is not None and len(rr.masks) > 0)
+                            seg_pass = bool(has_det)
+                        except Exception:
+                            seg_pass = None
+                    st = {"last_cx": None, "frames": 0, "counted": False, "labels": Counter(), "seg_pass": seg_pass, "last_seen": self._frame_idx}
+                    self._tracks[tid] = st
+                st["frames"] += 1
+                st["last_seen"] = self._frame_idx
+                if cls_id is not None and int(cls_id) >= 0:
+                    st["labels"][int(cls_id)] += 1
+                prev_cx = st["last_cx"]
+                cross = prev_cx is not None and prev_cx < line_x and cx >= line_x
+                in_roi = True
+                if roi_rect is not None:
+                    in_roi = roi_rect.contains(cx, cy) if not hasattr(roi_rect, "points") else roi_rect.contains(cx, cy)
+                cond = (not st["counted"]) and cross and in_roi and (st["frames"] >= self.stable_frames)
+                if cond:
+                    if self.seg_model is None or st["seg_pass"] is True or st["seg_pass"] is None:
+                        if len(st["labels"]) > 0:
+                            maj_cls = max(st["labels"].items(), key=lambda kv: kv[1])[0]
+                            name = self.names[maj_cls] if maj_cls < len(self.names) else str(maj_cls)
+                            counts[name] = counts.get(name, 0) + 1
+                            events.append((ts, int(maj_cls), int(tid), float(c)))
+                            st["counted"] = True
+                st["last_cx"] = cx
+            remove_tids = []
+            for tid, st in self._tracks.items():
+                if st["last_seen"] < self._frame_idx - max(self.stable_frames * 5, 30):
+                    remove_tids.append(tid)
+            for tid in remove_tids:
+                self._tracks.pop(tid, None)
+        else:
+            for i in range(len(boxes)):
+                x1, y1, x2, y2 = boxes[i]
+                cx = (x1 + x2) / 2.0
+                cy = (y1 + y2) / 2.0
+                if roi_rect is None or roi_rect.contains(cx, cy):
+                    name = self.names[clss[i]] if clss[i] < len(self.names) else str(clss[i])
+                    counts[name] = counts.get(name, 0) + 1
+                    events.append((ts, int(clss[i]), -1, float(confs[i]) if i < len(confs) else 0.0))
         annotated = r.plot()
         if roi_rect is not None:
             if hasattr(roi_rect, "points"):
@@ -79,4 +181,5 @@ class Pipeline:
                 cv2.polylines(annotated, [pts], True, (104, 0, 123), 2)
             else:
                 cv2.rectangle(annotated, (roi_rect.x1, roi_rect.y1), (roi_rect.x2, roi_rect.y2), (104, 0, 123), 2)
+        cv2.line(annotated, (int(line_x), 0), (int(line_x), annotated.shape[0] - 1), (0, 192, 255), 2)
         return annotated, counts, events
