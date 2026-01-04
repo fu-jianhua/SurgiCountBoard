@@ -4,11 +4,12 @@ import cv2
 import torch
 import streamlit as st
 import pandas as pd
+import numpy as np
 from core.source import open_capture
 from core.roi import ROIRect
 from core.pipeline import Pipeline
 from core.session import SessionManager
-from core.store import init_db, add_detection, list_sessions, session_stats, range_stats, end_session, get_session, search_sessions
+from core.store import init_db, add_detection, session_stats, end_session, get_session, search_sessions
 from core.video import open_writer, write_frame, close_writer
 
 st.set_page_config(page_title="SurgiCountBoard", layout="wide")
@@ -75,17 +76,24 @@ with st.sidebar:
         max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
     with st.expander("会话与ROI", expanded=False):
         idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
-        roi_width_pct = st.number_input("默认 ROI 宽度(%)", min_value=5, max_value=100, value=100, step=1)
-        move_step_pct = st.number_input("移动步长(%)", min_value=1, max_value=50, value=5, step=1)
-        roi_btn_col_l, roi_btn_col_r = st.columns(2)
-        roi_left_btn = roi_btn_col_l.button("ROI 左移")
-        roi_right_btn = roi_btn_col_r.button("ROI 右移")
-        if "roi_offset_pct" not in st.session_state:
-            st.session_state.roi_offset_pct = 0.0
-        if roi_left_btn:
-            st.session_state.roi_offset_pct = max(-0.9, float(st.session_state.roi_offset_pct) - float(move_step_pct) / 100.0)
-        if roi_right_btn:
-            st.session_state.roi_offset_pct = min(0.9, float(st.session_state.roi_offset_pct) + float(move_step_pct) / 100.0)
+        if "line_pos_pct" not in st.session_state:
+            st.session_state.line_pos_pct = 70
+        line_move_step_pct = st.number_input("计数线移动步长(%)", min_value=1, max_value=50, value=5, step=1)
+        line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1)
+        st.session_state.line_pos_pct = int(line_pos_slider)
+        line_btn_col_l, line_btn_col_r = st.columns(2)
+        line_left_btn = line_btn_col_l.button("计数线左移")
+        line_right_btn = line_btn_col_r.button("计数线右移")
+        if line_left_btn:
+            st.session_state.line_pos_pct = max(0, int(st.session_state.line_pos_pct) - int(line_move_step_pct))
+        if line_right_btn:
+            st.session_state.line_pos_pct = min(100, int(st.session_state.line_pos_pct) + int(line_move_step_pct))
+        prev_w = int(imgsz)
+        prev_h = max(1, int(prev_w * 9 / 16))
+        preview = np.full((prev_h, prev_w, 3), 200, dtype=np.uint8)
+        line_x = int(float(st.session_state.line_pos_pct) / 100.0 * prev_w)
+        cv2.line(preview, (int(line_x), 0), (int(line_x), prev_h - 1), (0, 192, 255), 2)
+        st.image(preview, channels="BGR")
     
 
 col1, col2 = st.columns(2)
@@ -174,6 +182,7 @@ if start_btn and not st.session_state.running:
             max_det=int(max_det),
             frame_rate=float(cap.get(cv2.CAP_PROP_FPS) or 30.0),
             seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt"),
+            line_pos=float(st.session_state.get("line_pos_pct", 70)) / 100.0,
         )
         ret, frame = cap.read()
         if not ret:
@@ -188,12 +197,7 @@ if start_btn and not st.session_state.running:
             _render_status()
         else:
             h, w = frame.shape[:2]
-            rw = max(1, int(w * (float(roi_width_pct) / 100.0)))
-            base_x1 = w - rw
-            offset = int(w * float(st.session_state.roi_offset_pct))
-            x1 = max(0, min(w - rw, base_x1 + offset))
-            x2 = x1 + rw - 1
-            st.session_state.roi = ROIRect(int(x1), 0, int(x2), h - 1)
+            st.session_state.roi = ROIRect(0, 0, w - 1, h - 1)
             sess = SessionManager(camera_id=str(source_str), idle_seconds=int(idle_seconds), roi_json=st.session_state.roi.to_json())
             st.session_state.session = sess
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
