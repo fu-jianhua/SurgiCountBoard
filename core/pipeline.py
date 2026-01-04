@@ -38,6 +38,15 @@ class Pipeline:
         self.imgsz = imgsz
         self.max_det = max_det
         self.names = list(self.model.names.values()) if isinstance(self.model.names, dict) else self.model.names
+        n_colors = max(1, len(self.names)) if isinstance(self.names, (list, tuple)) else 1
+        self._colors = []
+        for i in range(int(n_colors)):
+            h = (float(i) * 0.61803398875) % 1.0
+            s = 0.8
+            v = 0.95
+            hsv = np.array([[[int(h * 180.0), int(s * 255.0), int(v * 255.0)]]], dtype=np.uint8)
+            bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]
+            self._colors.append((int(bgr[0]), int(bgr[1]), int(bgr[2])))
         self.line_pos = float(max(0.0, min(1.0, line_pos)))
         self.stable_frames = int(max(1, stable_frames))
         self.seg_model = None
@@ -208,7 +217,15 @@ class Pipeline:
             if not display_mask[i]:
                 continue
             x1, y1, x2, y2 = boxes[i]
-            cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+            if i < len(clss):
+                ci = int(clss[i])
+                if isinstance(self._colors, list) and ci >= 0 and ci < len(self._colors):
+                    color = self._colors[ci]
+                else:
+                    color = (0, 255, 0)
+            else:
+                color = (0, 255, 0)
+            cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
             if i < len(clss):
                 name = self.names[clss[i]] if clss[i] < len(self.names) else str(clss[i])
             else:
@@ -216,7 +233,7 @@ class Pipeline:
             conf_txt = f" {confs[i]:.2f}" if i < len(confs) else ""
             if name or conf_txt:
                 lbl = f"{name}{conf_txt}"
-                cv2.putText(annotated, lbl, (int(x1), max(0, int(y1) - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
+                cv2.putText(annotated, lbl, (int(x1), max(0, int(y1) - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
         if roi_rect is not None:
             if hasattr(roi_rect, "points"):
                 pts = np.array(roi_rect.points, dtype=np.int32)
