@@ -52,6 +52,65 @@ def _parse_dt(s: str | None):
     except Exception:
         return None
 
+def _run_stream(pipeline, cap, roi, low_latency, stop_btn, org_frame_container, ann_frame_container):
+    try:
+        while cap.isOpened() and st.session_state.running:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            annotated, counts, events = pipeline.process(frame, roi)
+            if len(counts) > 0:
+                overlay = annotated.copy()
+                box_h = 28 * (len(counts) + 1)
+                cv2.rectangle(overlay, (8, 8), (280, 8 + box_h), (0, 0, 0), -1)
+                annotated = cv2.addWeighted(overlay, 0.35, annotated, 0.65, 0)
+                y = 32
+                for k in sorted(counts.keys()):
+                    v = counts[k]
+                    cv2.putText(annotated, f"{k}: {v}", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                    y += 26
+            sf = 960.0 / frame.shape[1] if frame.shape[1] > 960 else 1.0
+            if sf != 1.0:
+                dframe = cv2.resize(frame, (int(frame.shape[1] * sf), int(frame.shape[0] * sf)))
+                dann = cv2.resize(annotated, (int(annotated.shape[1] * sf), int(annotated.shape[0] * sf)))
+            else:
+                dframe = frame
+                dann = annotated
+            now = time.time()
+            has_roi_det = len(events) > 0
+            if has_roi_det:
+                sid = st.session_state.session.on_detection(now)
+                if st.session_state.writer is None:
+                    out_dir = os.path.join("runs", "surgicountboard")
+                    os.makedirs(out_dir, exist_ok=True)
+                    out_path = os.path.join(out_dir, f"session_{sid}.mp4")
+                    out_path = os.path.abspath(out_path)
+                    st.session_state.video_path = out_path
+                    st.session_state.writer = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
+                for ts, cls_id, tid, c in events:
+                    if tid is not None and tid >= 0:
+                        add_detection(sid, ts, cls_id, tid, c)
+            ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path if "video_path" in st.session_state else None)
+            if ended is not None and st.session_state.writer is not None:
+                close_writer(st.session_state.writer)
+                st.session_state.writer = None
+                st.session_state.video_path = None
+            if st.session_state.writer is not None:
+                write_frame(st.session_state.writer, annotated)
+            org_frame_container.image(dframe, channels="BGR", output_format="JPEG")
+            ann_frame_container.image(dann, channels="BGR", output_format="JPEG")
+            time.sleep(0.01 if low_latency else 0.03)
+            if stop_btn:
+                st.session_state.running = False
+    except Exception:
+        st.session_state.running = False
+    finally:
+        if st.session_state.writer is not None:
+            close_writer(st.session_state.writer)
+            st.session_state.writer = None
+        cap.release()
+        st.session_state.cap = None
+
 @st.cache_resource(show_spinner=False)
 def _get_model_names(path: str):
     from ultralytics import YOLO
@@ -77,17 +136,21 @@ with st.sidebar:
     with st.expander("会话与ROI", expanded=False):
         idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
         if "line_pos_pct" not in st.session_state:
-            st.session_state.line_pos_pct = 70
-        line_move_step_pct = st.number_input("计数线移动步长(%)", min_value=1, max_value=50, value=5, step=1)
-        line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1)
-        st.session_state.line_pos_pct = int(line_pos_slider)
+            st.session_state.line_pos_pct = 80
+        is_running = bool(st.session_state.get("running", False))
+        line_move_step_pct = st.number_input("计数线移动步长(%)", min_value=1, max_value=50, value=5, step=1, disabled=is_running)
+        line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1, disabled=is_running)
+        if not is_running:
+            st.session_state.line_pos_pct = int(line_pos_slider)
         line_btn_col_l, line_btn_col_r = st.columns(2)
-        line_left_btn = line_btn_col_l.button("计数线左移")
-        line_right_btn = line_btn_col_r.button("计数线右移")
-        if line_left_btn:
+        line_left_btn = line_btn_col_l.button("计数线左移", disabled=is_running)
+        line_right_btn = line_btn_col_r.button("计数线右移", disabled=is_running)
+        if not is_running and line_left_btn:
             st.session_state.line_pos_pct = max(0, int(st.session_state.line_pos_pct) - int(line_move_step_pct))
-        if line_right_btn:
+        if not is_running and line_right_btn:
             st.session_state.line_pos_pct = min(100, int(st.session_state.line_pos_pct) + int(line_move_step_pct))
+        if is_running:
+            st.warning("正在运行中，禁止调整计数线位置")
         prev_w = int(imgsz)
         prev_h = max(1, int(prev_w * 9 / 16))
         preview = np.full((prev_h, prev_w, 3), 200, dtype=np.uint8)
@@ -184,6 +247,7 @@ if start_btn and not st.session_state.running:
             seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt"),
             line_pos=float(st.session_state.get("line_pos_pct", 70)) / 100.0,
         )
+        st.session_state.pipeline = pipeline
         ret, frame = cap.read()
         if not ret:
             st.error("无法读取帧")
@@ -203,63 +267,7 @@ if start_btn and not st.session_state.running:
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             st.session_state.status = "运行中"
             _render_status()
-            try:
-                while cap.isOpened() and st.session_state.running:
-                    ok, frame = cap.read()
-                    if not ok:
-                        break
-                    annotated, counts, events = pipeline.process(frame, st.session_state.roi)
-                    if len(counts) > 0:
-                        overlay = annotated.copy()
-                        box_h = 28 * (len(counts) + 1)
-                        cv2.rectangle(overlay, (8, 8), (280, 8 + box_h), (0, 0, 0), -1)
-                        annotated = cv2.addWeighted(overlay, 0.35, annotated, 0.65, 0)
-                        y = 32
-                        for k in sorted(counts.keys()):
-                            v = counts[k]
-                            cv2.putText(annotated, f"{k}: {v}", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-                            y += 26
-                    sf = 960.0 / frame.shape[1] if frame.shape[1] > 960 else 1.0
-                    if sf != 1.0:
-                        dframe = cv2.resize(frame, (int(frame.shape[1] * sf), int(frame.shape[0] * sf)))
-                        dann = cv2.resize(annotated, (int(annotated.shape[1] * sf), int(annotated.shape[0] * sf)))
-                    else:
-                        dframe = frame
-                        dann = annotated
-                    now = time.time()
-                    has_roi_det = len(events) > 0
-                    if has_roi_det:
-                        sid = st.session_state.session.on_detection(now)
-                        if st.session_state.writer is None:
-                            out_dir = os.path.join("runs", "surgicountboard")
-                            os.makedirs(out_dir, exist_ok=True)
-                            out_path = os.path.join(out_dir, f"session_{sid}.mp4")
-                            out_path = os.path.abspath(out_path)
-                            st.session_state.video_path = out_path
-                            st.session_state.writer = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
-                        for ts, cls_id, tid, c in events:
-                            if tid is not None and tid >= 0:
-                                add_detection(sid, ts, cls_id, tid, c)
-                    ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path if "video_path" in st.session_state else None)
-                    if ended is not None and st.session_state.writer is not None:
-                        close_writer(st.session_state.writer)
-                        st.session_state.writer = None
-                        st.session_state.video_path = None
-                    if st.session_state.writer is not None:
-                        write_frame(st.session_state.writer, annotated)
-                    org_frame_container.image(dframe, channels="BGR", output_format="JPEG")
-                    ann_frame_container.image(dann, channels="BGR", output_format="JPEG")
-                    time.sleep(0.01 if low_latency else 0.03)
-                    if stop_btn:
-                        st.session_state.running = False
-            except Exception:
-                st.session_state.running = False
-            finally:
-                if st.session_state.writer is not None:
-                    close_writer(st.session_state.writer)
-                    st.session_state.writer = None
-                cap.release()
-                st.session_state.cap = None
+            _run_stream(st.session_state.pipeline, cap, st.session_state.roi, low_latency, stop_btn, org_frame_container, ann_frame_container)
 
 tab_tasks = st.container()
 
@@ -341,6 +349,9 @@ with tab_tasks:
                     hide_index=True,
                     height=max(140, min(360, 40 + (len(df_stats) + 1) * 32)),
                 )
-            with detail_col2:
-                if ss and ss[5]:
-                    st.video(ss[5])
+        with detail_col2:
+            if ss and ss[5]:
+                st.video(ss[5])
+
+if st.session_state.running and st.session_state.cap is not None and st.session_state.pipeline is not None and not start_btn:
+    _run_stream(st.session_state.pipeline, st.session_state.cap, st.session_state.roi, low_latency, stop_btn, org_frame_container, ann_frame_container)
