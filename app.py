@@ -131,6 +131,7 @@ with st.sidebar:
         conf = st.slider("置信度", 0.0, 1.0, 0.25, 0.01)
         iou = st.slider("IoU", 0.0, 1.0, 0.45, 0.01)
         track_enabled = st.checkbox("启用跟踪", True)
+        seg_enabled = st.checkbox("启用SEG辅助判别", True)
         imgsz = st.number_input("推理分辨率(imgsz)", min_value=256, max_value=1280, value=640, step=64)
         max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
     with st.expander("会话与ROI", expanded=False):
@@ -244,7 +245,7 @@ if start_btn and not st.session_state.running:
             imgsz=int(imgsz if not low_latency else min(imgsz, 512)),
             max_det=int(max_det),
             frame_rate=float(cap.get(cv2.CAP_PROP_FPS) or 30.0),
-            seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt"),
+            seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt") if bool(seg_enabled) else None,
             line_pos=float(st.session_state.get("line_pos_pct", 70)) / 100.0,
         )
         st.session_state.pipeline = pipeline

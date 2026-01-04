@@ -5,6 +5,7 @@ from collections import Counter
 from ultralytics import YOLO
 import os
 import sys
+import re
 
 _BT_ROOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ByteTrack")
 if _BT_ROOT not in sys.path:
@@ -42,6 +43,12 @@ class Pipeline:
         self.seg_model = None
         if seg_model is not None:
             self.seg_model = seg_model if not isinstance(seg_model, str) else YOLO(seg_model)
+        self._neg_roots = set([
+            "person","car","truck","bus","bicycle","motorcycle",
+            "chair","sofa","couch","bed","table",
+            "dog","cat","tv","laptop","keyboard","cellphone","phone",
+            "book","clock","vase","teddybear","pottedplant"
+        ])
         self._tracks = {}
         self._frame_idx = 0
         self._bt = None
@@ -57,6 +64,12 @@ class Pipeline:
                 self._bt = BYTETracker(_BTArgs(), frame_rate=float(frame_rate))
             except Exception:
                 self._bt = None
+
+    def _norm_name(self, s):
+        try:
+            return re.sub(r"[^a-z]+", "", str(s).lower())
+        except Exception:
+            return str(s).lower()
 
     def _bbox_iou(self, box: np.ndarray, boxes: np.ndarray):
         if boxes.size == 0:
@@ -90,6 +103,7 @@ class Pipeline:
         events = []
         self._frame_idx += 1
         h, w = frame.shape[:2]
+        display_mask = np.ones((len(boxes),), dtype=bool)
         if roi_rect is not None and not hasattr(roi_rect, "points"):
             line_x = int(roi_rect.x1 + self.line_pos * (roi_rect.x2 - roi_rect.x1))
         else:
@@ -134,12 +148,27 @@ class Pipeline:
                         try:
                             seg_res = self.seg_model(patch, conf=0.2, device=self.device, half=self.half, imgsz=self.imgsz, verbose=False)
                             rr = seg_res[0]
-                            has_det = (rr.boxes is not None and len(rr.boxes) > 0) or (getattr(rr, "masks", None) is not None and rr.masks is not None and len(rr.masks) > 0)
-                            seg_pass = bool(has_det)
+                            seg_names = list(rr.names.values()) if isinstance(rr.names, dict) else rr.names
+                            has_any = ((rr.boxes is not None and len(rr.boxes) > 0) or (getattr(rr, "masks", None) is not None and rr.masks is not None and len(rr.masks) > 0))
+                            if has_any:
+                                has_negative = False
+                                if rr.boxes is not None and rr.boxes.cls is not None:
+                                    seg_cls = rr.boxes.cls.cpu().numpy().astype(int)
+                                    for cid in seg_cls:
+                                        seg_name = seg_names[cid] if isinstance(seg_names, (list, tuple)) and cid < len(seg_names) else str(cid)
+                                        if self._norm_name(seg_name) in self._neg_roots:
+                                            has_negative = True
+                                            break
+                                seg_pass = (not has_negative)
+                            else:
+                                seg_pass = False
                         except Exception:
                             seg_pass = None
                     st = {"last_cx": None, "frames": 0, "counted": False, "labels": Counter(), "seg_pass": seg_pass, "last_seen": self._frame_idx}
                     self._tracks[tid] = st
+                if det_idx >= 0 and self.seg_model is not None and st.get("seg_pass") is False:
+                    if det_idx < display_mask.shape[0]:
+                        display_mask[det_idx] = False
                 st["frames"] += 1
                 st["last_seen"] = self._frame_idx
                 if cls_id is not None and int(cls_id) >= 0:
@@ -174,7 +203,20 @@ class Pipeline:
                     name = self.names[clss[i]] if clss[i] < len(self.names) else str(clss[i])
                     counts[name] = counts.get(name, 0) + 1
                     events.append((ts, int(clss[i]), -1, float(confs[i]) if i < len(confs) else 0.0))
-        annotated = r.plot()
+        annotated = frame.copy()
+        for i in range(len(boxes)):
+            if not display_mask[i]:
+                continue
+            x1, y1, x2, y2 = boxes[i]
+            cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+            if i < len(clss):
+                name = self.names[clss[i]] if clss[i] < len(self.names) else str(clss[i])
+            else:
+                name = ""
+            conf_txt = f" {confs[i]:.2f}" if i < len(confs) else ""
+            if name or conf_txt:
+                lbl = f"{name}{conf_txt}"
+                cv2.putText(annotated, lbl, (int(x1), max(0, int(y1) - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
         if roi_rect is not None:
             if hasattr(roi_rect, "points"):
                 pts = np.array(roi_rect.points, dtype=np.int32)
