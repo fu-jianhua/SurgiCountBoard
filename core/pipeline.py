@@ -266,4 +266,17 @@ class Pipeline:
             else:
                 cv2.rectangle(annotated, (roi_rect.x1, roi_rect.y1), (roi_rect.x2, roi_rect.y2), (104, 0, 123), 2)
         cv2.line(annotated, (int(line_x), 0), (int(line_x), annotated.shape[0] - 1), (0, 192, 255), 2)
-        return annotated, counts, events
+        has_roi_det = False
+        for i in range(len(boxes)):
+            if not display_mask[i]:
+                continue
+            x1, y1, x2, y2 = boxes[i]
+            cx = (x1 + x2) / 2.0
+            cy = (y1 + y2) / 2.0
+            in_roi = True
+            if roi_rect is not None:
+                in_roi = roi_rect.contains(cx, cy) if not hasattr(roi_rect, "points") else roi_rect.contains(cx, cy)
+            if in_roi:
+                has_roi_det = True
+                break
+        return annotated, counts, events, has_roi_det

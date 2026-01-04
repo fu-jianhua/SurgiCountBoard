@@ -54,11 +54,15 @@ def _parse_dt(s: str | None):
 
 def _run_stream(pipeline, cap, roi, low_latency, stop_btn, org_frame_container, ann_frame_container):
     try:
+        det_streak = 0
+        no_det_streak = 0
+        start_frames = 20
+        stop_frames = 20
         while cap.isOpened() and st.session_state.running:
             ok, frame = cap.read()
             if not ok:
                 break
-            annotated, counts, events = pipeline.process(frame, roi)
+            annotated, counts, events, roi_det = pipeline.process(frame, roi)
             if len(counts) > 0:
                 overlay = annotated.copy()
                 box_h = 28 * (len(counts) + 1)
@@ -77,20 +81,29 @@ def _run_stream(pipeline, cap, roi, low_latency, stop_btn, org_frame_container, 
                 dframe = frame
                 dann = annotated
             now = time.time()
-            has_roi_det = len(events) > 0
-            if has_roi_det:
+            if roi_det:
+                det_streak += 1
+                no_det_streak = 0
+            else:
+                no_det_streak += 1
+                det_streak = 0
+            if st.session_state.writer is None and det_streak >= start_frames:
                 sid = st.session_state.session.on_detection(now)
-                if st.session_state.writer is None:
-                    out_dir = os.path.join("runs", "surgicountboard")
-                    os.makedirs(out_dir, exist_ok=True)
-                    out_path = os.path.join(out_dir, f"session_{sid}.mp4")
-                    out_path = os.path.abspath(out_path)
-                    st.session_state.video_path = out_path
-                    st.session_state.writer = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
-                for ts, cls_id, tid, c in events:
-                    if tid is not None and tid >= 0:
-                        add_detection(sid, ts, cls_id, tid, c)
-            ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path if "video_path" in st.session_state else None)
+                out_dir = os.path.join("runs", "surgicountboard")
+                os.makedirs(out_dir, exist_ok=True)
+                out_path = os.path.join(out_dir, f"session_{sid}.mp4")
+                out_path = os.path.abspath(out_path)
+                st.session_state.video_path = out_path
+                st.session_state.writer = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
+            elif st.session_state.writer is not None and roi_det:
+                st.session_state.session.on_detection(now)
+            sid_for_events = st.session_state.session.current_session_id if st.session_state.session is not None else None
+            for ts, cls_id, tid, c in events:
+                if sid_for_events is not None and tid is not None and tid >= 0:
+                    add_detection(sid_for_events, ts, cls_id, tid, c)
+            ended = None
+            if st.session_state.writer is not None and no_det_streak >= stop_frames:
+                ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path if "video_path" in st.session_state else None)
             if ended is not None and st.session_state.writer is not None:
                 close_writer(st.session_state.writer)
                 st.session_state.writer = None
