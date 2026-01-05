@@ -63,14 +63,19 @@ def _run_stream(pipeline, cap, roi, low_latency, stop_btn, org_frame_container, 
             if not ok:
                 break
             annotated, counts, events, roi_det = pipeline.process(frame, roi)
-            if len(counts) > 0:
+            if "running_counts" not in st.session_state:
+                st.session_state.running_counts = {}
+            for k, v in counts.items():
+                st.session_state.running_counts[k] = int(st.session_state.running_counts.get(k, 0)) + int(v)
+            current_counts = st.session_state.running_counts
+            if len(current_counts) > 0:
                 overlay = annotated.copy()
-                box_h = 28 * (len(counts) + 1)
+                box_h = 28 * (len(current_counts) + 1)
                 cv2.rectangle(overlay, (8, 8), (280, 8 + box_h), (0, 0, 0), -1)
                 annotated = cv2.addWeighted(overlay, 0.35, annotated, 0.65, 0)
                 y = 32
-                for k in sorted(counts.keys()):
-                    v = counts[k]
+                for k in sorted(current_counts.keys()):
+                    v = current_counts[k]
                     cv2.putText(annotated, f"{k}: {v}", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
                     y += 26
             sf = 960.0 / frame.shape[1] if frame.shape[1] > 960 else 1.0
@@ -108,6 +113,7 @@ def _run_stream(pipeline, cap, roi, low_latency, stop_btn, org_frame_container, 
                 close_writer(st.session_state.writer)
                 st.session_state.writer = None
                 st.session_state.video_path = None
+                st.session_state.running_counts = {}
             if st.session_state.writer is not None:
                 write_frame(st.session_state.writer, annotated)
             org_frame_container.image(dframe, channels="BGR", output_format="JPEG")
@@ -150,7 +156,7 @@ with st.sidebar:
     with st.expander("会话与ROI", expanded=False):
         idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
         if "line_pos_pct" not in st.session_state:
-            st.session_state.line_pos_pct = 80
+            st.session_state.line_pos_pct = 70
         is_running = bool(st.session_state.get("running", False))
         line_move_step_pct = st.number_input("计数线移动步长(%)", min_value=1, max_value=50, value=5, step=1, disabled=is_running)
         line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1, disabled=is_running)
@@ -191,6 +197,8 @@ if "cap" not in st.session_state:
     st.session_state.cap = None
 if "status" not in st.session_state:
     st.session_state.status = "已停止"
+if "running_counts" not in st.session_state:
+    st.session_state.running_counts = {}
 
 _render_status()
 
@@ -211,6 +219,7 @@ if stop_btn and st.session_state.running:
         end_session(st.session_state.session.current_session_id, time.time(), st.session_state.video_path if "video_path" in st.session_state else None)
         st.session_state.session.current_session_id = None
         st.session_state.video_path = None
+        st.session_state.running_counts = {}
     st.session_state.status = "已停止"
     _render_status()
 
@@ -218,6 +227,7 @@ if start_btn and not st.session_state.running:
     st.session_state.status = "启动中..."
     _render_status()
     st.session_state.running = True
+    st.session_state.running_counts = {}
     cap = open_capture(source_str, low_latency=low_latency)
     st.session_state.cap = cap
     if not cap.isOpened():
