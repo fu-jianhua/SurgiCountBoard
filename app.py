@@ -33,7 +33,8 @@ def _render_status(text=None):
         unsafe_allow_html=True,
     )
 
-default_model = os.path.join("e:\\project\\ultralytics\\models\\medical_instruments5\\weights", "best.pt")
+default_model = os.path.join("e:\\project\\ultralytics\\runs\\train\\medical_yolo11m_ns2\\weights", "best.pt")
+# default_model = os.path.join("e:\\project\\ultralytics\\models\\medical_instruments5\\weights", "best.pt")
 
 def _fmt_ts(ts: float | None):
     try:
@@ -168,7 +169,7 @@ with st.sidebar:
     with st.expander("会话与ROI", expanded=False):
         idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
         if "line_pos_pct" not in st.session_state:
-            st.session_state.line_pos_pct = 70
+            st.session_state.line_pos_pct = 60
         is_running = bool(st.session_state.get("running", False))
         line_move_step_pct = st.number_input("计数线移动步长(%)", min_value=1, max_value=50, value=5, step=1, disabled=is_running)
         line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1, disabled=is_running)
