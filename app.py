@@ -65,8 +65,14 @@ def _run_stream(pipeline, cap, roi, low_latency, stop_btn, org_frame_container, 
             annotated, counts, events, roi_det = pipeline.process(frame, roi)
             if "running_counts" not in st.session_state:
                 st.session_state.running_counts = {}
-            for k, v in counts.items():
-                st.session_state.running_counts[k] = int(st.session_state.running_counts.get(k, 0)) + int(v)
+            for ts, cls_id, tid, c in events:
+                if tid is not None and int(tid) >= 0:
+                    names = getattr(st.session_state.pipeline, "names", None)
+                    if isinstance(names, (list, tuple)) and int(cls_id) < len(names):
+                        name = names[int(cls_id)]
+                    else:
+                        name = str(int(cls_id))
+                    st.session_state.running_counts[name] = int(st.session_state.running_counts.get(name, 0)) + 1
             current_counts = st.session_state.running_counts
             if len(current_counts) > 0:
                 overlay = annotated.copy()
