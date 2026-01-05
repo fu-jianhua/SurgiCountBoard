@@ -258,7 +258,26 @@ class Pipeline:
             conf_txt = f" {confs[i]:.2f}" if i < len(confs) else ""
             if name or conf_txt:
                 lbl = f"{name}{conf_txt}"
-                cv2.putText(annotated, lbl, (int(x1), max(0, int(y1) - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+                fs = 0.6
+                th = 2
+                (tw, thh), bl = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
+                H, W = annotated.shape[0], annotated.shape[1]
+                tx = int(x1)
+                ty = int(y1) - 6
+                if ty - thh - 4 < 0:
+                    ty = int(y1) + thh + 6
+                if tx + tw + 4 > W:
+                    tx = int(max(0, int(x2) - tw - 4))
+                if ty > H - 2:
+                    ty = H - 2
+                bx1 = max(0, tx)
+                by1 = max(0, ty - thh - 4)
+                bx2 = min(W - 1, tx + tw + 4)
+                by2 = min(H - 1, ty + 2)
+                ov = annotated.copy()
+                cv2.rectangle(ov, (bx1, by1), (bx2, by2), (0, 0, 0), -1)
+                annotated = cv2.addWeighted(ov, 0.4, annotated, 0.6, 0)
+                cv2.putText(annotated, lbl, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, fs, color, th, cv2.LINE_AA)
         if roi_rect is not None:
             if hasattr(roi_rect, "points"):
                 pts = np.array(roi_rect.points, dtype=np.int32)
