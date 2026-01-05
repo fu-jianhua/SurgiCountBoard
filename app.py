@@ -100,6 +100,7 @@ def _run_stream(pipeline, cap, roi, low_latency, stop_btn, org_frame_container, 
                 out_path = os.path.abspath(out_path)
                 st.session_state.video_path = out_path
                 st.session_state.writer = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
+                st.toast(f"新会话已开始，ID: {sid}")
             elif st.session_state.writer is not None and roi_det:
                 st.session_state.session.on_detection(now)
             sid_for_events = st.session_state.session.current_session_id if st.session_state.session is not None else None
@@ -110,10 +111,15 @@ def _run_stream(pipeline, cap, roi, low_latency, stop_btn, org_frame_container, 
             if st.session_state.writer is not None and no_det_streak >= stop_frames:
                 ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path if "video_path" in st.session_state else None)
             if ended is not None and st.session_state.writer is not None:
+                vp = st.session_state.video_path if "video_path" in st.session_state else None
                 close_writer(st.session_state.writer)
                 st.session_state.writer = None
                 st.session_state.video_path = None
                 st.session_state.running_counts = {}
+                if vp:
+                    st.toast(f"会话已结束，ID: {ended}，录像保存: {vp}")
+                else:
+                    st.toast(f"会话已结束，ID: {ended}")
             if st.session_state.writer is not None:
                 write_frame(st.session_state.writer, annotated)
             org_frame_container.image(dframe, channels="BGR", output_format="JPEG")
@@ -216,10 +222,13 @@ if stop_btn and st.session_state.running:
         close_writer(st.session_state.writer)
         st.session_state.writer = None
     if st.session_state.session is not None and getattr(st.session_state.session, "current_session_id", None) is not None:
-        end_session(st.session_state.session.current_session_id, time.time(), st.session_state.video_path if "video_path" in st.session_state else None)
+        vp = st.session_state.video_path if "video_path" in st.session_state else None
+        end_session(st.session_state.session.current_session_id, time.time(), vp)
         st.session_state.session.current_session_id = None
         st.session_state.video_path = None
         st.session_state.running_counts = {}
+        if vp:
+            st.toast("当前会话已停止，录像已保存")
     st.session_state.status = "已停止"
     _render_status()
 
