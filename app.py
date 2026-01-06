@@ -177,8 +177,22 @@ with st.sidebar:
         imgsz = st.number_input("推理分辨率(imgsz)", min_value=256, max_value=1280, value=640, step=64)
         max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
     with st.expander("融合与统计", expanded=False):
+        if "reid_ckpt" not in st.session_state:
+            _default_osnet = os.path.join(os.path.dirname(__file__), "osnet_x0_25_msmt17.pt")
+            if os.path.isfile(_default_osnet):
+                st.session_state.reid_ckpt = _default_osnet
+        if "reid_enabled" not in st.session_state:
+            st.session_state.reid_enabled = os.path.isfile(st.session_state.get("reid_ckpt", ""))
+        if "reid_match_thresh" not in st.session_state:
+            st.session_state.reid_match_thresh = 0.35
         fusion_window_sec = st.slider("融合时间窗(秒)", 0.2, 5.0, 1.5, 0.1)
         st.session_state.fusion_window_sec = float(fusion_window_sec)
+        reid_enabled = st.checkbox("启用ReID（跨摄像头追踪）", value=bool(st.session_state.get("reid_enabled", False)))
+        st.session_state.reid_enabled = bool(reid_enabled)
+        reid_ckpt = st.text_input("ReID权重路径(.h5/.pt)", value=str(st.session_state.get("reid_ckpt", "")))
+        st.session_state.reid_ckpt = reid_ckpt
+        reid_match_thresh = st.slider("ReID匹配阈值(余弦距离)", 0.05, 1.0, float(st.session_state.get("reid_match_thresh", 0.35)), 0.05)
+        st.session_state.reid_match_thresh = float(reid_match_thresh)
     with st.expander("会话与ROI", expanded=False):
         idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
         if "line_pos_pct" not in st.session_state:
@@ -315,6 +329,33 @@ if start_btn and not st.session_state.running:
             from ultralytics import YOLO
             return YOLO(path)
         model_obj = _load_model(model_path)
+        @st.cache_resource(show_spinner=False)
+        def _load_reid_model(ckpt_path: str):
+            try:
+                from yolox.motdt_tracker.reid_model import load_reid_model
+                return load_reid_model(ckpt_path)
+            except Exception:
+                return None
+        @st.cache_resource(show_spinner=False)
+        def _load_osnet_model(ckpt_path: str, arch_name: str):
+            try:
+                import torchreid
+            except Exception:
+                return None
+            try:
+                m = torchreid.models.build_model(name=arch_name, num_classes=1000, pretrained=False)
+                sd = torch.load(ckpt_path, map_location="cpu")
+                try:
+                    m.load_state_dict(sd, strict=False)
+                except Exception:
+                    if isinstance(sd, dict) and "state_dict" in sd:
+                        m.load_state_dict(sd["state_dict"], strict=False)
+                if torch.cuda.is_available():
+                    m = m.cuda()
+                m.eval()
+                return m
+            except Exception:
+                return None
         try:
             st.session_state.model_names = list(model_obj.names.values()) if isinstance(model_obj.names, dict) else model_obj.names
         except Exception:
@@ -322,6 +363,44 @@ if start_btn and not st.session_state.running:
         st.session_state.global_counts = {}
         st.session_state.global_recent = []
         st.session_state.global_sid = None
+        st.session_state.track2global = {}
+        st.session_state.next_global_id = 1
+        st.session_state.reid_registry = {}
+        if bool(st.session_state.get("reid_enabled")) and isinstance(st.session_state.get("reid_ckpt"), str) and len(st.session_state.get("reid_ckpt")) > 0:
+            pth = st.session_state.reid_ckpt
+            if os.path.isfile(pth):
+                ext = os.path.splitext(pth)[1].lower()
+                if ext == ".h5":
+                    st.session_state.reid_model = _load_reid_model(pth)
+                    st.session_state.reid_backend = "h5"
+                    if st.session_state.reid_model is None:
+                        st.warning("ReID模型加载失败，将使用方案A（加权平均）")
+                        st.session_state.reid_enabled = False
+                elif ext == ".pt":
+                    fn = os.path.basename(pth).lower()
+                    if "osnet_x1_0" in fn:
+                        arch = "osnet_x1_0"
+                    elif "osnet_x0_75" in fn:
+                        arch = "osnet_x0_75"
+                    elif "osnet_x0_5" in fn:
+                        arch = "osnet_x0_5"
+                    else:
+                        arch = "osnet_x0_25"
+                    st.session_state.reid_model = _load_osnet_model(pth, arch)
+                    if st.session_state.reid_model is None:
+                        st.warning("未检测到OSNet运行环境或权重不兼容，请安装torchreid或更换权重；已使用方案A（加权平均）")
+                        st.session_state.reid_enabled = False
+                        st.session_state.reid_backend = None
+                    else:
+                        st.session_state.reid_backend = "osnet"
+                else:
+                    st.warning("不支持的ReID权重格式；已使用方案A（加权平均）")
+                    st.session_state.reid_enabled = False
+                    st.session_state.reid_backend = None
+            else:
+                st.warning("未找到ReID权重文件；已使用方案A（加权平均）")
+                st.session_state.reid_enabled = False
+                st.session_state.reid_backend = None
         sel_idx = int(st.session_state.get("selected_cam_idx", 0))
         for idx, cid in enumerate(list(st.session_state.cameras.keys())):
             cst = st.session_state.cameras[cid]
@@ -385,7 +464,105 @@ if start_btn and not st.session_state.running:
             if not dup:
                 name = names[int(class_id)] if isinstance(names, (list, tuple)) and int(class_id) < len(names) else str(int(class_id))
                 st.session_state.global_counts[name] = int(st.session_state.global_counts.get(name, 0)) + 1
-                st.session_state.global_recent.append((ts, int(class_id), str(cam_id)))
+                st.session_state.global_recent.append((ts, int(class_id), str(cam_id), float(conf)))
+        def _extract_osnet_features(model, image, tlbrs):
+            if len(tlbrs) == 0:
+                return None
+            patches = []
+            H, W = image.shape[:2]
+            for b in tlbrs:
+                x1, y1, x2, y2 = [int(max(0, min(W-1, b[0]))), int(max(0, min(H-1, b[1]))), int(max(0, min(W-1, b[2]))), int(max(0, min(H-1, b[3])))]
+                if x2 > x1 and y2 > y1:
+                    p = image[y1:y2, x1:x2]
+                    patches.append(p)
+            if len(patches) == 0:
+                return None
+            import numpy as _np
+            import torch as _torch
+            feats = []
+            with _torch.no_grad():
+                for p in patches:
+                    pr = cv2.resize(p, (128, 256))
+                    rgb = cv2.cvtColor(pr, cv2.COLOR_BGR2RGB)
+                    t = _torch.from_numpy(rgb).float().permute(2, 0, 1) / 255.0
+                    mean = _torch.tensor([0.485, 0.456, 0.406]).view(3,1,1)
+                    std = _torch.tensor([0.229, 0.224, 0.225]).view(3,1,1)
+                    t = (t - mean) / std
+                    t = t.unsqueeze(0)
+                    if _torch.cuda.is_available():
+                        t = t.cuda()
+                    f = model(t)
+                    f = f.detach().cpu().numpy()[0]
+                    f = f / (_np.linalg.norm(f) + 1e-9)
+                    feats.append(f)
+            return feats
+        def _add_event_reid(ts, class_id, cam_id, tid, frame, pipeline, names):
+            if "global_counts" not in st.session_state:
+                st.session_state.global_counts = {}
+            if "reid_registry" not in st.session_state:
+                st.session_state.reid_registry = {}
+            if "track2global" not in st.session_state:
+                st.session_state.track2global = {}
+            if "next_global_id" not in st.session_state:
+                st.session_state.next_global_id = 1
+            if st.session_state.get("reid_model") is None:
+                return
+            tlbr = None
+            try:
+                tlbr = pipeline.get_track_box(tid)
+            except Exception:
+                tlbr = None
+            if tlbr is None:
+                return
+            f = None
+            try:
+                if st.session_state.get("reid_backend") == "h5":
+                    from yolox.motdt_tracker.reid_model import extract_reid_features
+                    feats = extract_reid_features(st.session_state.reid_model, frame, [tlbr])
+                    if feats is None or feats.shape[0] == 0:
+                        return
+                    f = feats[0].cpu().numpy().astype(np.float32)
+                    f = f / (np.linalg.norm(f) + 1e-9)
+                elif st.session_state.get("reid_backend") == "osnet":
+                    feats = _extract_osnet_features(st.session_state.reid_model, frame, [tlbr])
+                    if feats is None or len(feats) == 0:
+                        return
+                    f = feats[0].astype(np.float32)
+                else:
+                    return
+            except Exception:
+                return
+            match_thresh = float(st.session_state.get("reid_match_thresh", 0.25))
+            best_gid = None
+            best_dist = 1e9
+            for gid, gi in st.session_state.reid_registry.items():
+                gf = gi.get("feat")
+                if gf is None:
+                    continue
+                sim = float(np.dot(gf, f))
+                dist = 1.0 - sim
+                if dist < best_dist:
+                    best_dist = dist
+                    best_gid = gid
+            if best_gid is None or best_dist > match_thresh:
+                gid = int(st.session_state.next_global_id)
+                st.session_state.next_global_id = gid + 1
+                st.session_state.reid_registry[gid] = {"feat": f, "counted": False, "class_id": int(class_id), "last_seen": ts}
+            else:
+                gid = int(best_gid)
+                gi = st.session_state.reid_registry.get(gid)
+                if gi is not None:
+                    gf = gi.get("feat")
+                    upd = gf * 0.9 + f * 0.1
+                    upd = upd / (np.linalg.norm(upd) + 1e-9)
+                    gi["feat"] = upd
+                    gi["last_seen"] = ts
+            st.session_state.track2global[(str(cam_id), int(tid))] = int(gid)
+            gi = st.session_state.reid_registry.get(int(gid))
+            if gi is not None and gi.get("counted") is False:
+                name = names[int(class_id)] if isinstance(names, (list, tuple)) and int(class_id) < len(names) else str(int(class_id))
+                st.session_state.global_counts[name] = int(st.session_state.global_counts.get(name, 0)) + 1
+                gi["counted"] = True
         import threading
         def _run_camera(cid, cst, show=False):
             try:
@@ -405,9 +582,51 @@ if start_btn and not st.session_state.running:
                     for ts, cls_id, tid, c in events:
                         if cst.get("session") is not None and tid is not None and tid >= 0:
                             add_detection(cst["session"].current_session_id or cst["session"].on_detection(ts), ts, int(cls_id), int(tid), float(c))
-                        _add_event(ts, cls_id, cid, c, names)
+                        if bool(st.session_state.get("reid_enabled")) and st.session_state.get("reid_model") is not None:
+                            _add_event_reid(ts, cls_id, cid, tid, frame, pipeline, names)
+                        else:
+                            _add_event(ts, cls_id, cid, c, names)
                     if len(counts) > 0:
                         cst["running_counts"] = {k: int(v) for k, v in counts.items()}
+                        if not bool(st.session_state.get("reid_enabled")):
+                            try:
+                                cams = st.session_state.get("cameras", {})
+                                grecent = st.session_state.get("global_recent", [])
+                                model_names = st.session_state.get("model_names", [])
+                                if isinstance(cams, dict) and len(cams) > 0:
+                                    weights = {}
+                                    for e in grecent:
+                                        cls_id_e = int(e[1])
+                                        name_e = model_names[cls_id_e] if isinstance(model_names, (list, tuple)) and cls_id_e < len(model_names) else str(cls_id_e)
+                                        cid_e = str(e[2])
+                                        conf_e = float(e[3]) if len(e) > 3 else 0.0
+                                        key = (cid_e, name_e)
+                                        weights[key] = weights.get(key, 0.0) + max(0.0, conf_e)
+                                    all_keys = set()
+                                    for _cid, _cst in cams.items():
+                                        rc = _cst.get("running_counts", {}) or {}
+                                        for kk in rc.keys():
+                                            all_keys.add(kk)
+                                    avg_counts = {}
+                                    for kk in all_keys:
+                                        num = 0.0
+                                        denom = 0.0
+                                        for _cid, _cst in cams.items():
+                                            c_val = float(_cst.get("running_counts", {}).get(kk, 0))
+                                            w = float(weights.get((str(_cid), kk), 0.0))
+                                            if w > 0.0:
+                                                num += c_val * w
+                                                denom += w
+                                        if denom <= 0.0:
+                                            s = 0
+                                            for _cid, _cst in cams.items():
+                                                s += int(_cst.get("running_counts", {}).get(kk, 0))
+                                            avg_counts[kk] = int(round(float(s) / float(max(1, len(cams)))))
+                                        else:
+                                            avg_counts[kk] = int(round(num / denom))
+                                    st.session_state.global_counts = avg_counts
+                            except Exception:
+                                pass
                     sf = 960.0 / frame.shape[1] if frame.shape[1] > 960 else 1.0
                     dframe = cv2.resize(frame, (int(frame.shape[1] * sf), int(frame.shape[0] * sf))) if sf != 1.0 else frame
                     dann = cv2.resize(annotated, (int(annotated.shape[1] * sf), int(annotated.shape[0] * sf))) if sf != 1.0 else annotated

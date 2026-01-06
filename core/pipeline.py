@@ -63,6 +63,7 @@ class Pipeline:
             "book","clock","vase","teddybear","pottedplant"
         ])
         self._tracks = {}
+        self._last_boxes = {}
         self._frame_idx = 0
         self._bt = None
         if self.use_track:
@@ -170,6 +171,10 @@ class Pipeline:
                 tid = int(getattr(t, "track_id", -1))
                 if tid < 0:
                     continue
+                try:
+                    self._last_boxes[tid] = [float(x1), float(y1), float(x2), float(y2)]
+                except Exception:
+                    pass
                 st = self._tracks.get(tid)
                 if st is None:
                     patch_x1 = max(0, int(x1))
@@ -299,3 +304,9 @@ class Pipeline:
                 has_roi_det = True
                 break
         return annotated, counts, events, has_roi_det
+
+    def get_track_box(self, tid: int):
+        try:
+            return self._last_boxes.get(int(tid))
+        except Exception:
+            return None
