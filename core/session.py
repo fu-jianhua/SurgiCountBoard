@@ -2,17 +2,18 @@ import time
 from .store import start_session, end_session
 
 class SessionManager:
-    def __init__(self, camera_id: str, idle_seconds: int, roi_json: str):
+    def __init__(self, camera_id: str, idle_seconds: int, roi_json: str, batch_id: str | None = None):
         self.camera_id = camera_id
         self.idle_seconds = idle_seconds
         self.roi_json = roi_json
+        self.batch_id = batch_id
         self.current_session_id = None
         self.last_detection_ts = None
 
     def on_detection(self, now: float = None):
         ts = now or time.time()
         if self.current_session_id is None:
-            self.current_session_id = start_session(self.camera_id, self.roi_json, ts)
+            self.current_session_id = start_session(self.camera_id, self.roi_json, ts, self.batch_id)
         self.last_detection_ts = ts
         return self.current_session_id
 

@@ -23,20 +23,26 @@ def init_db():
         CONN = _conn()
     c = CONN.cursor()
     c.execute(
-        "CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, camera_id TEXT, start_ts REAL, end_ts REAL, roi TEXT, video_path TEXT)"
+        "CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, camera_id TEXT, start_ts REAL, end_ts REAL, roi TEXT, video_path TEXT, batch_id TEXT)"
     )
     c.execute(
         "CREATE TABLE IF NOT EXISTS detections (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER, ts REAL, class_id INTEGER, track_id INTEGER, conf REAL)"
     )
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_det ON detections(session_id, class_id, track_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_detections_ts ON detections(ts)")
+    try:
+        cols = [r[1] for r in c.execute("PRAGMA table_info(sessions)").fetchall()]
+        if "batch_id" not in cols:
+            c.execute("ALTER TABLE sessions ADD COLUMN batch_id TEXT")
+    except sqlite3.Error:
+        pass
     CONN.commit()
 
-def start_session(camera_id: str, roi: str, start_ts: float = None) -> int:
+def start_session(camera_id: str, roi: str, start_ts: float = None, batch_id: str | None = None) -> int:
     init_db()
     ts = start_ts or time.time()
     c = CONN.cursor()
-    c.execute("INSERT INTO sessions(camera_id, start_ts, roi) VALUES (?, ?, ?)", (camera_id, ts, roi))
+    c.execute("INSERT INTO sessions(camera_id, start_ts, roi, batch_id) VALUES (?, ?, ?, ?)", (camera_id, ts, roi, batch_id))
     CONN.commit()
     return c.lastrowid
 
@@ -95,7 +101,7 @@ def get_session(session_id: int):
     )
     return c.fetchone()
 
-def search_sessions(camera_id: str | None = None, start_ts: float | None = None, end_ts: float | None = None, offset: int = 0, limit: int = 50):
+def search_sessions(camera_id: str | None = None, start_ts: float | None = None, end_ts: float | None = None, offset: int = 0, limit: int = 50, batch_id: str | None = None):
     init_db()
     clauses = []
     params = []
@@ -108,9 +114,21 @@ def search_sessions(camera_id: str | None = None, start_ts: float | None = None,
     if end_ts is not None:
         clauses.append("start_ts <= ?")
         params.append(end_ts)
+    if batch_id:
+        clauses.append("batch_id LIKE ?")
+        params.append(f"%{batch_id}%")
     where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = f"SELECT id, camera_id, start_ts, end_ts, video_path FROM sessions{where_sql} ORDER BY start_ts DESC LIMIT ? OFFSET ?"
     params.extend([limit, max(0, offset)])
     c = CONN.cursor()
     c.execute(sql, tuple(params))
+    return c.fetchall()
+
+def list_batches(limit: int = 100):
+    init_db()
+    c = CONN.cursor()
+    c.execute(
+        "SELECT batch_id, MAX(start_ts) AS latest FROM sessions WHERE batch_id IS NOT NULL AND batch_id != '' GROUP BY batch_id ORDER BY latest DESC LIMIT ?",
+        (limit,),
+    )
     return c.fetchall()

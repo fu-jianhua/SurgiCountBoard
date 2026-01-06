@@ -5,6 +5,7 @@ import torch
 import streamlit as st
 import pandas as pd
 import numpy as np
+import re
 from core.source import open_capture
 from core.roi import ROIRect
 from core.pipeline import Pipeline
@@ -155,10 +156,25 @@ with st.sidebar:
     stop_btn = btn_col2.button("停止")
     with st.expander("视频源与设备", expanded=True):
         model_path = st.text_input("模型路径", default_model)
-        source_str = st.text_input("视频源", "0")
+        source_multi = st.text_area("视频源(一行一个或逗号分隔)", "0")
         device_inp = st.text_input("设备(0/1 或 cpu)", "0")
         half = st.checkbox("FP16 半精度", True)
         low_latency = st.checkbox("低延迟模式", False)
+        if "sources" not in st.session_state:
+            st.session_state.sources = []
+        srcs = [s.strip() for s in re.split(r"[\n\r,\t ]+", source_multi) if s.strip()]
+        if not st.session_state.get("running", False):
+            st.session_state.sources = srcs if len(srcs) > 0 else ["0"]
+        if "selected_cam_idx" not in st.session_state:
+            st.session_state.selected_cam_idx = 0
+        cam_opts = [f"cam{idx+1}: {s}" for idx, s in enumerate(st.session_state.sources)]
+        disabled_sel = bool(st.session_state.get("running", False)) or len(cam_opts) == 0
+        sel = st.selectbox("展示摄像头", options=cam_opts if len(cam_opts) > 0 else ["cam1: 0"], index=min(int(st.session_state.selected_cam_idx), max(0, len(cam_opts) - 1)), disabled=disabled_sel)
+        if not disabled_sel:
+            try:
+                st.session_state.selected_cam_idx = int(cam_opts.index(sel))
+            except Exception:
+                st.session_state.selected_cam_idx = 0
     with st.expander("推理与跟踪", expanded=False):
         conf = st.slider("置信度", 0.0, 1.0, 0.25, 0.01)
         iou = st.slider("IoU", 0.0, 1.0, 0.45, 0.01)
@@ -166,6 +182,9 @@ with st.sidebar:
         seg_enabled = st.checkbox("启用SEG辅助判别", False)
         imgsz = st.number_input("推理分辨率(imgsz)", min_value=256, max_value=1280, value=640, step=64)
         max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
+    with st.expander("融合与统计", expanded=False):
+        fusion_window_sec = st.slider("融合时间窗(秒)", 0.2, 5.0, 1.5, 0.1)
+        st.session_state.fusion_window_sec = float(fusion_window_sec)
     with st.expander("会话与ROI", expanded=False):
         idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
         if "line_pos_pct" not in st.session_state:
@@ -220,6 +239,29 @@ if stop_btn and st.session_state.running:
     _render_status()
     st.session_state.running = False
     try:
+        if "cameras" in st.session_state and isinstance(st.session_state.cameras, dict):
+            for cid, cst in list(st.session_state.cameras.items()):
+                try:
+                    if cst.get("writer") is not None:
+                        close_writer(cst.get("writer"))
+                except Exception:
+                    pass
+                try:
+                    if cst.get("cap") is not None:
+                        cst.get("cap").release()
+                except Exception:
+                    pass
+                try:
+                    sess = cst.get("session")
+                    if sess is not None and getattr(sess, "current_session_id", None) is not None:
+                        end_session(sess.current_session_id, time.time(), cst.get("video_path"))
+                        sess.current_session_id = None
+                except Exception:
+                    pass
+            st.session_state.cameras = {}
+    except Exception:
+        pass
+    try:
         if st.session_state.cap is not None:
             st.session_state.cap.release()
     except Exception:
@@ -244,16 +286,25 @@ if start_btn and not st.session_state.running:
     _render_status()
     st.session_state.running = True
     st.session_state.running_counts = {}
-    cap = open_capture(source_str, low_latency=low_latency)
-    st.session_state.cap = cap
-    if not cap.isOpened():
-        st.error("无法打开视频源")
-        st.session_state.running = False
+    sources = st.session_state.sources if isinstance(st.session_state.get("sources"), list) and len(st.session_state.sources) > 0 else ["0"]
+    cams = {}
+    for idx, src in enumerate(sources):
         try:
-            cap.release()
+            cap = open_capture(src, low_latency=low_latency)
         except Exception:
-            pass
-        st.session_state.cap = None
+            cap = open_capture(src, low_latency=False)
+        cams[f"cam{idx+1}"] = {"src": src, "index": idx, "cap": cap, "writer": None, "video_path": None, "running_counts": {}, "session": None, "last_frame": None, "last_ann": None}
+    st.session_state.cameras = cams
+    opened = [cid for cid, c in cams.items() if c["cap"].isOpened()]
+    if len(opened) == 0:
+        st.error("无法打开任何视频源")
+        st.session_state.running = False
+        for cid, c in cams.items():
+            try:
+                c["cap"].release()
+            except Exception:
+                pass
+        st.session_state.cameras = {}
         st.session_state.status = "已停止"
         _render_status()
     else:
@@ -274,40 +325,167 @@ if start_btn and not st.session_state.running:
             st.session_state.model_names = list(model_obj.names.values()) if isinstance(model_obj.names, dict) else model_obj.names
         except Exception:
             st.session_state.model_names = None
-        pipeline = Pipeline(
-            model=model_obj,
-            conf=conf,
-            iou=iou,
-            use_track=bool(track_enabled),
-            device=dev,
-            half=half,
-            imgsz=int(imgsz if not low_latency else min(imgsz, 512)),
-            max_det=int(max_det),
-            frame_rate=float(cap.get(cv2.CAP_PROP_FPS) or 30.0),
-            seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt") if bool(seg_enabled) else None,
-            line_pos=float(st.session_state.get("line_pos_pct", 70)) / 100.0,
-        )
-        st.session_state.pipeline = pipeline
-        ret, frame = cap.read()
-        if not ret:
-            st.error("无法读取帧")
-            st.session_state.running = False
+        st.session_state.global_counts = {}
+        st.session_state.global_recent = []
+        sel_idx = int(st.session_state.get("selected_cam_idx", 0))
+        for idx, cid in enumerate(list(st.session_state.cameras.keys())):
+            cst = st.session_state.cameras[cid]
+            cap = cst["cap"]
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            h, w = frame.shape[:2]
+            roi = ROIRect(0, 0, w - 1, h - 1)
+            cst["roi"] = roi
+            sess = SessionManager(camera_id=str(cst["src"]), idle_seconds=int(idle_seconds), roi_json=roi.to_json())
+            cst["session"] = sess
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            pipe = Pipeline(
+                model=model_obj,
+                conf=conf,
+                iou=iou,
+                use_track=bool(track_enabled),
+                device=dev,
+                half=half,
+                imgsz=int(imgsz if not low_latency else min(imgsz, 512)),
+                max_det=int(max_det),
+                frame_rate=float(cap.get(cv2.CAP_PROP_FPS) or 30.0),
+                seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt") if bool(seg_enabled) else None,
+                line_pos=float(st.session_state.get("line_pos_pct", 70)) / 100.0,
+            )
+            cst["pipeline"] = pipe
+        st.session_state.status = "运行中"
+        _render_status()
+        def _add_event(ts, class_id, cam_id, conf, names):
+            if "global_recent" not in st.session_state:
+                st.session_state.global_recent = []
+            if "global_counts" not in st.session_state:
+                st.session_state.global_counts = {}
+            wnd = float(st.session_state.get("fusion_window_sec", 1.5))
+            keep = []
+            for e in st.session_state.global_recent:
+                if ts - e[0] <= wnd:
+                    keep.append(e)
+            st.session_state.global_recent = keep
+            dup = False
+            for e in st.session_state.global_recent:
+                if abs(ts - e[0]) <= wnd and int(class_id) == int(e[1]):
+                    dup = True
+                    break
+            if not dup:
+                name = names[int(class_id)] if isinstance(names, (list, tuple)) and int(class_id) < len(names) else str(int(class_id))
+                st.session_state.global_counts[name] = int(st.session_state.global_counts.get(name, 0)) + 1
+                st.session_state.global_recent.append((ts, int(class_id), str(cam_id)))
+        import threading
+        def _run_camera(cid, cst, show=False):
             try:
-                cap.release()
+                det_streak = 0
+                no_det_streak = 0
+                start_frames = 20
+                stop_frames = 20
+                cap = cst["cap"]
+                pipeline = cst["pipeline"]
+                roi = cst["roi"]
+                names = getattr(pipeline, "names", [])
+                while cap.isOpened() and st.session_state.running:
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    annotated, counts, events, roi_det = pipeline.process(frame, roi)
+                    for ts, cls_id, tid, c in events:
+                        if cst.get("session") is not None and tid is not None and tid >= 0:
+                            add_detection(cst["session"].current_session_id or cst["session"].on_detection(ts), ts, int(cls_id), int(tid), float(c))
+                        _add_event(ts, cls_id, cid, c, names)
+                    if len(counts) > 0:
+                        cst["running_counts"] = {k: int(v) for k, v in counts.items()}
+                    sf = 960.0 / frame.shape[1] if frame.shape[1] > 960 else 1.0
+                    dframe = cv2.resize(frame, (int(frame.shape[1] * sf), int(frame.shape[0] * sf))) if sf != 1.0 else frame
+                    dann = cv2.resize(annotated, (int(annotated.shape[1] * sf), int(annotated.shape[0] * sf))) if sf != 1.0 else annotated
+                    now = time.time()
+                    if roi_det:
+                        det_streak += 1
+                        no_det_streak = 0
+                    else:
+                        no_det_streak += 1
+                        det_streak = 0
+                    if cst.get("writer") is None and (det_streak >= start_frames or len(events) > 0 or len(counts) > 0):
+                        sid = cst["session"].on_detection(now)
+                        out_dir = os.path.join("runs", "surgicountboard")
+                        os.makedirs(out_dir, exist_ok=True)
+                        out_path = os.path.join(out_dir, f"session_{sid}_cam_{int(cst.get('index', 0))}.mp4")
+                        out_path = os.path.abspath(out_path)
+                        cst["video_path"] = out_path
+                        cst["writer"] = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
+                    elif cst.get("writer") is not None and roi_det:
+                        cst["session"].on_detection(now)
+                    ended = None
+                    if cst.get("writer") is not None and no_det_streak >= stop_frames:
+                        ended = cst["session"].check_idle_and_end(now, cst.get("video_path"))
+                    if ended is not None and cst.get("writer") is not None:
+                        vp = cst.get("video_path")
+                        close_writer(cst.get("writer"))
+                        cst["writer"] = None
+                        cst["video_path"] = None
+                        cst["running_counts"] = {}
+                    if cst.get("writer") is not None:
+                        write_frame(cst.get("writer"), annotated)
+                    cst["last_frame"] = dframe
+                    cst["last_ann"] = dann
+                    if show:
+                        if isinstance(org_frame_container, type(col1.empty())):
+                            org_frame_container.image(dframe, channels="BGR", output_format="JPEG")
+                        if isinstance(ann_frame_container, type(col2.empty())):
+                            overlay = dann.copy()
+                            rc = cst.get("running_counts", {})
+                            if len(rc) > 0:
+                                ovl = overlay.copy()
+                                box_h = 28 * (len(rc) + 1)
+                                cv2.rectangle(ovl, (8, 8), (280, 8 + box_h), (0, 0, 0), -1)
+                                overlay = cv2.addWeighted(ovl, 0.35, overlay, 0.65, 0)
+                                y = 32
+                                for k in sorted(rc.keys()):
+                                    v = rc[k]
+                                    cv2.putText(overlay, f"{k}: {v}", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                                    y += 26
+                            gcounts = st.session_state.get("global_counts", {})
+                            if len(gcounts) > 0:
+                                H, W = overlay.shape[:2]
+                                box_w = 280
+                                box_h = 28 * (len(gcounts) + 1)
+                                ov = overlay.copy()
+                                cv2.rectangle(ov, (W - box_w - 8, 8), (W - 8, 8 + box_h), (0, 0, 0), -1)
+                                overlay = cv2.addWeighted(ov, 0.35, overlay, 0.65, 0)
+                                y = 32
+                                for k in sorted(gcounts.keys()):
+                                    v = gcounts[k]
+                                    cv2.putText(overlay, f"{k}: {v}", (W - box_w, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                                    y += 26
+                            ann_frame_container.image(overlay, channels="BGR", output_format="JPEG")
+                    time.sleep(0.01 if low_latency else 0.03)
             except Exception:
                 pass
-            st.session_state.cap = None
-            st.session_state.status = "已停止"
-            _render_status()
-        else:
-            h, w = frame.shape[:2]
-            st.session_state.roi = ROIRect(0, 0, w - 1, h - 1)
-            sess = SessionManager(camera_id=str(source_str), idle_seconds=int(idle_seconds), roi_json=st.session_state.roi.to_json())
-            st.session_state.session = sess
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            st.session_state.status = "运行中"
-            _render_status()
-            _run_stream(st.session_state.pipeline, cap, st.session_state.roi, low_latency, stop_btn, org_frame_container, ann_frame_container)
+            finally:
+                try:
+                    if cst.get("writer") is not None:
+                        close_writer(cst.get("writer"))
+                        cst["writer"] = None
+                except Exception:
+                    pass
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+        import threading
+        tids = []
+        for idx, cid in enumerate(list(st.session_state.cameras.keys())):
+            cst = st.session_state.cameras[cid]
+            show = (idx == int(sel_idx))
+            if show:
+                _run_camera(cid, cst, show=True)
+            else:
+                t = threading.Thread(target=_run_camera, args=(cid, cst, False), daemon=True)
+                t.start()
+                tids.append(t)
 
 tab_tasks = st.container()
 
@@ -326,7 +504,15 @@ with tab_tasks:
     else:
         st.session_state.page_tasks = int(page_val)
     offset = int((st.session_state.page_tasks - 1) * 10)
-    sessions = search_sessions(None, None, None, offset, int(10))
+    try:
+        from core.store import list_batches
+        batches = list_batches(200)
+    except Exception:
+        batches = []
+    batch_opts = ["全部"] + [str(b[0]) for b in batches]
+    bf_sel = st.selectbox("批次过滤", batch_opts, index=0)
+    bf = None if bf_sel == "全部" else bf_sel
+    sessions = search_sessions(None, None, None, offset, int(10), bf)
     if len(sessions) == 0:
         st.session_state.page_tasks = prev_page_tasks
     if len(sessions) == 0:
@@ -389,9 +575,9 @@ with tab_tasks:
                     hide_index=True,
                     height=max(140, min(360, 40 + (len(df_stats) + 1) * 32)),
                 )
-        with detail_col2:
-            if ss and ss[5]:
-                st.video(ss[5])
+            with detail_col2:
+                if ss and ss[5]:
+                    st.video(ss[5])
 
 if st.session_state.running and st.session_state.cap is not None and st.session_state.pipeline is not None and not start_btn:
     _run_stream(st.session_state.pipeline, st.session_state.cap, st.session_state.roi, low_latency, stop_btn, org_frame_container, ann_frame_container)
