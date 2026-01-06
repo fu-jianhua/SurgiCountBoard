@@ -321,6 +321,7 @@ if start_btn and not st.session_state.running:
             st.session_state.model_names = None
         st.session_state.global_counts = {}
         st.session_state.global_recent = []
+        st.session_state.global_sid = None
         sel_idx = int(st.session_state.get("selected_cam_idx", 0))
         for idx, cid in enumerate(list(st.session_state.cameras.keys())):
             cst = st.session_state.cameras[cid]
@@ -348,6 +349,21 @@ if start_btn and not st.session_state.running:
                 line_pos=float(st.session_state.get("line_pos_pct", 70)) / 100.0,
             )
             cst["pipeline"] = pipe
+            if cst.get("writer") is None:
+                sid = cst["session"].on_detection(time.time())
+                if st.session_state.get("global_sid") is None:
+                    st.session_state.global_sid = int(sid)
+                gid = int(st.session_state.get("global_sid", sid))
+                out_dir = os.path.join("runs", "surgicountboard")
+                os.makedirs(out_dir, exist_ok=True)
+                out_path = os.path.join(out_dir, f"session_{gid}_cam_{int(cst.get('index', 0))}.mp4")
+                out_path = os.path.abspath(out_path)
+                cst["video_path"] = out_path
+                cst["writer"] = open_writer(out_path, frame.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
+                try:
+                    write_frame(cst["writer"], frame)
+                except Exception:
+                    pass
         st.session_state.status = "运行中"
         _render_status()
         def _add_event(ts, class_id, cam_id, conf, names):
@@ -404,12 +420,19 @@ if start_btn and not st.session_state.running:
                         det_streak = 0
                     if cst.get("writer") is None and (det_streak >= start_frames or len(events) > 0 or len(counts) > 0):
                         sid = cst["session"].on_detection(now)
+                        if st.session_state.get("global_sid") is None:
+                            st.session_state.global_sid = int(sid)
+                        gid = int(st.session_state.get("global_sid", sid))
                         out_dir = os.path.join("runs", "surgicountboard")
                         os.makedirs(out_dir, exist_ok=True)
-                        out_path = os.path.join(out_dir, f"session_{sid}_cam_{int(cst.get('index', 0))}.mp4")
+                        out_path = os.path.join(out_dir, f"session_{gid}_cam_{int(cst.get('index', 0))}.mp4")
                         out_path = os.path.abspath(out_path)
                         cst["video_path"] = out_path
                         cst["writer"] = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
+                        try:
+                            write_frame(cst["writer"], annotated)
+                        except Exception:
+                            pass
                     elif cst.get("writer") is not None and roi_det:
                         cst["session"].on_detection(now)
                     ended = None
