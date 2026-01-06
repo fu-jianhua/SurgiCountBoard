@@ -683,19 +683,6 @@ if start_btn and not st.session_state.running:
                                     v = rc[k]
                                     cv2.putText(overlay, f"{k}: {v}", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
                                     y += 26
-                            gcounts = st.session_state.get("global_counts", {})
-                            if len(gcounts) > 0:
-                                H, W = overlay.shape[:2]
-                                box_w = 280
-                                box_h = 28 * (len(gcounts) + 1)
-                                ov = overlay.copy()
-                                cv2.rectangle(ov, (W - box_w - 8, 8), (W - 8, 8 + box_h), (0, 0, 0), -1)
-                                overlay = cv2.addWeighted(ov, 0.35, overlay, 0.65, 0)
-                                y = 32
-                                for k in sorted(gcounts.keys()):
-                                    v = gcounts[k]
-                                    cv2.putText(overlay, f"{k}: {v}", (W - box_w, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-                                    y += 26
                             ann_frame_container.image(overlay, channels="BGR", output_format="JPEG")
                     time.sleep(0.01 if low_latency else 0.03)
             except Exception:
