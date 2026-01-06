@@ -150,7 +150,7 @@ class Pipeline:
                 outputs[:, 5] = clss if len(clss) == len(boxes) else np.zeros((len(boxes),))
             det5 = outputs[:, :5] if len(boxes) > 0 else np.empty((0, 5), dtype=float)
             try:
-                tracks = self._bt.update(det5, img_info=frame.shape, img_size=frame.shape)
+                tracks = self._bt.update(det5, img_info=frame.shape, img_size=frame.shape, image=frame)
             except Exception:
                 tracks = []
             for t in tracks:

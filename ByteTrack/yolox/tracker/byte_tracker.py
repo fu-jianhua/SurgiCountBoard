@@ -5,6 +5,7 @@ import os.path as osp
 import copy
 import torch
 import torch.nn.functional as F
+from core.reid import ReIDExtractor
 
 from .kalman_filter import KalmanFilter
 from yolox.tracker import matching
@@ -22,6 +23,7 @@ class STrack(BaseTrack):
 
         self.score = score
         self.tracklet_len = 0
+        self.last_reid_feat = None
 
     def predict(self):
         mean_state = self.mean.copy()
@@ -155,8 +157,12 @@ class BYTETracker(object):
         self.buffer_size = int(frame_rate / 30.0 * args.track_buffer)
         self.max_time_lost = self.buffer_size
         self.kalman_filter = KalmanFilter()
+        self.reid = ReIDExtractor()
+        self.alpha = 0.6
+        self.beta = 0.4
+        self.reid_sim_thresh = 0.7
 
-    def update(self, output_results, img_info, img_size):
+    def update(self, output_results, img_info, img_size, image=None):
         self.frame_id += 1
         activated_starcks = []
         refind_stracks = []
@@ -191,6 +197,15 @@ class BYTETracker(object):
         else:
             detections = []
 
+        det_feats = None
+        if image is not None and len(dets) > 0:
+            feats = []
+            for tlbr in dets:
+                x1, y1, x2, y2 = tlbr
+                f = self.reid.extract(image, (x1, y1, x2, y2))
+                feats.append(f)
+            det_feats = np.stack(feats, axis=0) if len(feats) > 0 else None
+
         ''' Add newly detected tracklets to tracked_stracks'''
         unconfirmed = []
         tracked_stracks = []  # type: list[STrack]
@@ -204,9 +219,20 @@ class BYTETracker(object):
         strack_pool = joint_stracks(tracked_stracks, self.lost_stracks)
         # Predict the current location with KF
         STrack.multi_predict(strack_pool)
-        dists = matching.iou_distance(strack_pool, detections)
+        dists_iou = matching.iou_distance(strack_pool, detections)
         if not self.args.mot20:
-            dists = matching.fuse_score(dists, detections)
+            dists_iou = matching.fuse_score(dists_iou, detections)
+        if det_feats is not None and len(strack_pool) > 0:
+            reid_cost = np.ones((len(strack_pool), len(detections)), dtype=float)
+            for i, tr in enumerate(strack_pool):
+                tf = getattr(tr, "last_reid_feat", None)
+                if tf is None:
+                    continue
+                sims = det_feats @ tf.reshape(-1)
+                reid_cost[i, :] = 1.0 - sims
+            dists = self.alpha * dists_iou + self.beta * reid_cost
+        else:
+            dists = dists_iou
         matches, u_track, u_detection = matching.linear_assignment(dists, thresh=self.args.match_thresh)
 
         for itracked, idet in matches:
@@ -214,10 +240,43 @@ class BYTETracker(object):
             det = detections[idet]
             if track.state == TrackState.Tracked:
                 track.update(detections[idet], self.frame_id)
+                if image is not None:
+                    x1, y1, x2, y2 = STrack.tlwh_to_tlbr(det.tlwh)
+                    track.last_reid_feat = self.reid.extract(image, (x1, y1, x2, y2))
                 activated_starcks.append(track)
             else:
                 track.re_activate(det, self.frame_id, new_id=False)
+                if image is not None:
+                    x1, y1, x2, y2 = STrack.tlwh_to_tlbr(det.tlwh)
+                    track.last_reid_feat = self.reid.extract(image, (x1, y1, x2, y2))
                 refind_stracks.append(track)
+
+        if det_feats is not None and len(u_track) > 0 and len(u_detection) > 0:
+            pool_u = [strack_pool[i] for i in u_track]
+            reid_cost = np.ones((len(pool_u), len(u_detection)), dtype=float)
+            for i, tr in enumerate(pool_u):
+                tf = getattr(tr, "last_reid_feat", None)
+                if tf is None:
+                    continue
+                sims = det_feats[u_detection] @ tf.reshape(-1)
+                reid_cost[i, :] = 1.0 - sims
+            thresh = 1.0 - self.reid_sim_thresh
+            m2, u_track, u_detection = matching.linear_assignment(reid_cost, thresh=thresh)
+            for itracked, idet in m2:
+                track = pool_u[itracked]
+                det = detections[u_detection[idet]]
+                if track.state == TrackState.Tracked:
+                    track.update(det, self.frame_id)
+                    if image is not None:
+                        x1, y1, x2, y2 = STrack.tlwh_to_tlbr(det.tlwh)
+                        track.last_reid_feat = self.reid.extract(image, (x1, y1, x2, y2))
+                    activated_starcks.append(track)
+                else:
+                    track.re_activate(det, self.frame_id, new_id=False)
+                    if image is not None:
+                        x1, y1, x2, y2 = STrack.tlwh_to_tlbr(det.tlwh)
+                        track.last_reid_feat = self.reid.extract(image, (x1, y1, x2, y2))
+                    refind_stracks.append(track)
 
         ''' Step 3: Second association, with low score detection boxes'''
         # association the untrack to the low score detections
@@ -228,16 +287,42 @@ class BYTETracker(object):
         else:
             detections_second = []
         r_tracked_stracks = [strack_pool[i] for i in u_track if strack_pool[i].state == TrackState.Tracked]
-        dists = matching.iou_distance(r_tracked_stracks, detections_second)
+        dists_iou = matching.iou_distance(r_tracked_stracks, detections_second)
+        if det_feats is not None and len(detections_second) > 0:
+            feats2 = []
+            for det in detections_second:
+                x1, y1, x2, y2 = STrack.tlwh_to_tlbr(det.tlwh)
+                f = self.reid.extract(image, (x1, y1, x2, y2)) if image is not None else None
+                feats2.append(f)
+            det_feats2 = np.stack(feats2, axis=0) if image is not None and len(feats2) > 0 and feats2[0] is not None else None
+        else:
+            det_feats2 = None
+        if det_feats2 is not None and len(r_tracked_stracks) > 0:
+            reid_cost = np.ones((len(r_tracked_stracks), len(detections_second)), dtype=float)
+            for i, tr in enumerate(r_tracked_stracks):
+                tf = getattr(tr, "last_reid_feat", None)
+                if tf is None:
+                    continue
+                sims = det_feats2 @ tf.reshape(-1)
+                reid_cost[i, :] = 1.0 - sims
+            dists = self.alpha * dists_iou + self.beta * reid_cost
+        else:
+            dists = dists_iou
         matches, u_track, u_detection_second = matching.linear_assignment(dists, thresh=0.5)
         for itracked, idet in matches:
             track = r_tracked_stracks[itracked]
             det = detections_second[idet]
             if track.state == TrackState.Tracked:
                 track.update(det, self.frame_id)
+                if image is not None:
+                    x1, y1, x2, y2 = STrack.tlwh_to_tlbr(det.tlwh)
+                    track.last_reid_feat = self.reid.extract(image, (x1, y1, x2, y2))
                 activated_starcks.append(track)
             else:
                 track.re_activate(det, self.frame_id, new_id=False)
+                if image is not None:
+                    x1, y1, x2, y2 = STrack.tlwh_to_tlbr(det.tlwh)
+                    track.last_reid_feat = self.reid.extract(image, (x1, y1, x2, y2))
                 refind_stracks.append(track)
 
         for it in u_track:
@@ -254,6 +339,9 @@ class BYTETracker(object):
         matches, u_unconfirmed, u_detection = matching.linear_assignment(dists, thresh=0.7)
         for itracked, idet in matches:
             unconfirmed[itracked].update(detections[idet], self.frame_id)
+            if image is not None:
+                x1, y1, x2, y2 = STrack.tlwh_to_tlbr(detections[idet].tlwh)
+                unconfirmed[itracked].last_reid_feat = self.reid.extract(image, (x1, y1, x2, y2))
             activated_starcks.append(unconfirmed[itracked])
         for it in u_unconfirmed:
             track = unconfirmed[it]
@@ -266,6 +354,9 @@ class BYTETracker(object):
             if track.score < self.det_thresh:
                 continue
             track.activate(self.kalman_filter, self.frame_id)
+            if image is not None:
+                x1, y1, x2, y2 = STrack.tlwh_to_tlbr(track.tlwh)
+                track.last_reid_feat = self.reid.extract(image, (x1, y1, x2, y2))
             activated_starcks.append(track)
         """ Step 5: Update state"""
         for track in self.lost_stracks:
