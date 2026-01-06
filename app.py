@@ -170,25 +170,32 @@ with st.sidebar:
         idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
         if "line_pos_pct" not in st.session_state:
             st.session_state.line_pos_pct = 60
+        if "count_mode" not in st.session_state:
+            st.session_state.count_mode = "line"
         is_running = bool(st.session_state.get("running", False))
         line_move_step_pct = st.number_input("计数线移动步长(%)", min_value=1, max_value=50, value=5, step=1, disabled=is_running)
-        line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1, disabled=is_running)
+        count_mode_label = st.selectbox("计数方式", ["计数线", "ROI"], index=0 if st.session_state.count_mode == "line" else 1)
+        st.session_state.count_mode = "line" if count_mode_label == "计数线" else "roi"
+        line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1, disabled=(is_running or st.session_state.count_mode != "line"))
         if not is_running:
             st.session_state.line_pos_pct = int(line_pos_slider)
         line_btn_col_l, line_btn_col_r = st.columns(2)
-        line_left_btn = line_btn_col_l.button("计数线左移", disabled=is_running)
-        line_right_btn = line_btn_col_r.button("计数线右移", disabled=is_running)
+        line_left_btn = line_btn_col_l.button("计数线左移", disabled=(is_running or st.session_state.count_mode != "line"))
+        line_right_btn = line_btn_col_r.button("计数线右移", disabled=(is_running or st.session_state.count_mode != "line"))
         if not is_running and line_left_btn:
             st.session_state.line_pos_pct = max(0, int(st.session_state.line_pos_pct) - int(line_move_step_pct))
         if not is_running and line_right_btn:
             st.session_state.line_pos_pct = min(100, int(st.session_state.line_pos_pct) + int(line_move_step_pct))
-        if is_running:
+        if is_running and st.session_state.count_mode == "line":
             st.warning("正在运行中，禁止调整计数线位置")
         prev_w = int(imgsz)
         prev_h = max(1, int(prev_w * 9 / 16))
         preview = np.full((prev_h, prev_w, 3), 200, dtype=np.uint8)
-        line_x = int(float(st.session_state.line_pos_pct) / 100.0 * prev_w)
-        cv2.line(preview, (int(line_x), 0), (int(line_x), prev_h - 1), (0, 192, 255), 2)
+        if st.session_state.count_mode == "line":
+            line_x = int(float(st.session_state.line_pos_pct) / 100.0 * prev_w)
+            cv2.line(preview, (int(line_x), 0), (int(line_x), prev_h - 1), (0, 192, 255), 2)
+        else:
+            cv2.rectangle(preview, (0, 0), (prev_w - 1, prev_h - 1), (104, 0, 123), 2)
         st.image(preview, channels="BGR")
     
 
@@ -286,6 +293,7 @@ if start_btn and not st.session_state.running:
             frame_rate=float(cap.get(cv2.CAP_PROP_FPS) or 30.0),
             seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt") if bool(seg_enabled) else None,
             line_pos=float(st.session_state.get("line_pos_pct", 70)) / 100.0,
+            count_mode=str(st.session_state.get("count_mode", "line")),
         )
         st.session_state.pipeline = pipeline
         ret, frame = cap.read()

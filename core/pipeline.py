@@ -30,6 +30,7 @@ class Pipeline:
         frame_rate: float = 30.0,
         agnostic_nms: bool = True,
         dedup_iou: float = 0.65,
+        count_mode: str = "line",
     ):
         self.model = model if model is not None else YOLO(model_path)
         self.conf = conf
@@ -41,6 +42,7 @@ class Pipeline:
         self.max_det = max_det
         self.agnostic_nms = bool(agnostic_nms)
         self.dedup_iou = float(dedup_iou)
+        self.count_mode = "line" if str(count_mode).lower() not in ("roi",) else "roi"
         self.names = list(self.model.names.values()) if isinstance(self.model.names, dict) else self.model.names
         n_colors = max(1, len(self.names)) if isinstance(self.names, (list, tuple)) else 1
         self._colors = []
@@ -212,7 +214,10 @@ class Pipeline:
                 in_roi = True
                 if roi_rect is not None:
                     in_roi = roi_rect.contains(cx, cy) if not hasattr(roi_rect, "points") else roi_rect.contains(cx, cy)
-                cond = (not st["counted"]) and cross and in_roi and (st["frames"] >= self.stable_frames)
+                if self.count_mode == "line":
+                    cond = (not st["counted"]) and cross and in_roi and (st["frames"] >= self.stable_frames)
+                else:
+                    cond = (not st["counted"]) and in_roi and (st["frames"] >= self.stable_frames)
                 if cond:
                     if self.seg_model is None or st["seg_pass"] is True or st["seg_pass"] is None:
                         if len(st["labels"]) > 0:
@@ -284,7 +289,8 @@ class Pipeline:
                 cv2.polylines(annotated, [pts], True, (104, 0, 123), 2)
             else:
                 cv2.rectangle(annotated, (roi_rect.x1, roi_rect.y1), (roi_rect.x2, roi_rect.y2), (104, 0, 123), 2)
-        cv2.line(annotated, (int(line_x), 0), (int(line_x), annotated.shape[0] - 1), (0, 192, 255), 2)
+        if self.count_mode == "line":
+            cv2.line(annotated, (int(line_x), 0), (int(line_x), annotated.shape[0] - 1), (0, 192, 255), 2)
         has_roi_det = False
         for i in range(len(boxes)):
             if not display_mask[i]:
