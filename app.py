@@ -167,14 +167,8 @@ with st.sidebar:
             st.session_state.sources = srcs if len(srcs) > 0 else ["0"]
         if "selected_cam_idx" not in st.session_state:
             st.session_state.selected_cam_idx = 0
-        cam_opts = [f"cam{idx+1}: {s}" for idx, s in enumerate(st.session_state.sources)]
-        disabled_sel = bool(st.session_state.get("running", False)) or len(cam_opts) == 0
-        sel = st.selectbox("展示摄像头", options=cam_opts if len(cam_opts) > 0 else ["cam1: 0"], index=min(int(st.session_state.selected_cam_idx), max(0, len(cam_opts) - 1)), disabled=disabled_sel)
-        if not disabled_sel:
-            try:
-                st.session_state.selected_cam_idx = int(cam_opts.index(sel))
-            except Exception:
-                st.session_state.selected_cam_idx = 0
+        if not st.session_state.get("running", False):
+            st.session_state.selected_cam_idx = 0
     with st.expander("推理与跟踪", expanded=False):
         conf = st.slider("置信度", 0.0, 1.0, 0.25, 0.01)
         iou = st.slider("IoU", 0.0, 1.0, 0.45, 0.01)
