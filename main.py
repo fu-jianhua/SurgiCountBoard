@@ -189,6 +189,9 @@ def _multi_run():
         if isinstance(dev, str) and dev.lower() == "cpu":
             use_half = False
         model_obj = _load_model(model_path)
+        # 立即创建多摄像头会话，camera_id 保存为多源字符串，保证统一的 start/end
+        st.session_state.multi_id = start_session(str(source_str), "{}", time.time())
+        st.session_state.cam_video_paths = [None] * len(caps)
         pipelines = []; rois = []
         for idx, cap in enumerate(caps):
             ok, frame = cap.read()
@@ -245,6 +248,10 @@ def _multi_run():
                         out_path = os.path.abspath(os.path.join(out_dir, f"session_{st.session_state.multi_id}_cam_{idx}.mp4"))
                         writers[idx] = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
                         add_cam_session(int(st.session_state.multi_id), int(idx), int(st.session_state.multi_id), out_path)
+                        try:
+                            st.session_state.cam_video_paths[idx] = out_path
+                        except Exception:
+                            pass
                     for ts, cls_id, tid, c in events:
                         if st.session_state.multi_id is not None and tid is not None and tid >= 0:
                             add_detection(int(st.session_state.multi_id), ts, int(cls_id), int(idx)*100000 + int(tid), float(c))
@@ -265,7 +272,11 @@ def _multi_run():
                 if w is not None:
                     close_writer(w)
             if st.session_state.multi_id is not None:
-                end_session(int(st.session_state.multi_id), time.time(), None)
+                try:
+                    vp = ";".join([p for p in st.session_state.cam_video_paths if p]) if hasattr(st.session_state, "cam_video_paths") else None
+                except Exception:
+                    vp = None
+                end_session(int(st.session_state.multi_id), time.time(), vp)
             for cap in caps:
                 try:
                     cap.release()
@@ -273,6 +284,13 @@ def _multi_run():
                     pass
     if stop_btn and st.session_state.running:
         st.session_state.running = False
+        # 统一写入会话结束的视频路径
+        try:
+            if st.session_state.multi_id is not None:
+                vp = ";".join([p for p in st.session_state.cam_video_paths if p]) if hasattr(st.session_state, "cam_video_paths") else None
+                end_session(int(st.session_state.multi_id), time.time(), vp)
+        except Exception:
+            pass
         # 立即释放所有采集器，避免本机摄像头依旧亮着
         try:
             caps = st.session_state.get("captures", [])

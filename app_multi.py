@@ -136,7 +136,7 @@ def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
                     det_streak[idx] = 0
                 if st.session_state.multi_id is None and det_streak[idx] >= start_frames:
                     roi_meta = "{}"
-                    st.session_state.multi_id = start_session("multi", roi_meta, now)
+                    st.session_state.multi_id = start_session(str(sources_str), roi_meta, now)
                 if writers[idx] is None and st.session_state.multi_id is not None:
                     out_dir = os.path.join("runs", "surgicountboard")
                     os.makedirs(out_dir, exist_ok=True)
@@ -145,6 +145,10 @@ def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
                     writers[idx] = open_writer(out_path, annotated.shape, fps=captures[idx].get(cv2.CAP_PROP_FPS) or 25)
                     add_cam_session(int(st.session_state.multi_id), int(idx), int(st.session_state.multi_id), out_path)
                     st.toast(f"会话开始：session={st.session_state.multi_id}, cam={idx}")
+                    try:
+                        st.session_state.cam_video_paths[idx] = out_path
+                    except Exception:
+                        pass
                 for ts, cls_id, tid, c in events:
                     if tid is not None and tid >= 0 and st.session_state.multi_id is not None:
                         add_detection(int(st.session_state.multi_id), ts, int(cls_id), int(idx) * 100000 + int(tid), float(c))
@@ -170,7 +174,11 @@ def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
             if w is not None:
                 close_writer(w)
         if st.session_state.multi_id is not None:
-            end_session(int(st.session_state.multi_id), time.time(), None)
+            try:
+                vp = ";".join([p for p in st.session_state.cam_video_paths if p]) if hasattr(st.session_state, "cam_video_paths") else None
+            except Exception:
+                vp = None
+            end_session(int(st.session_state.multi_id), time.time(), vp)
 
 if stop_btn and st.session_state.running:
     st.session_state.status = "停止中..."
@@ -183,7 +191,11 @@ if stop_btn and st.session_state.running:
         pass
     st.session_state.captures = None
     if st.session_state.multi_id is not None:
-        end_session(int(st.session_state.multi_id), time.time(), None)
+        try:
+            vp = ";".join([p for p in st.session_state.cam_video_paths if p]) if hasattr(st.session_state, "cam_video_paths") else None
+        except Exception:
+            vp = None
+        end_session(int(st.session_state.multi_id), time.time(), vp)
         st.session_state.multi_id = None
     st.session_state.status = "已停止"
     _render_status()
@@ -217,6 +229,8 @@ if start_btn and not st.session_state.running:
             from ultralytics import YOLO
             return YOLO(path)
         model_obj = _load_model(model_path)
+        st.session_state.multi_id = start_session(str(sources_str), "{}", time.time())
+        st.session_state.cam_video_paths = [None] * len(captures)
         pipelines = []
         rois = []
         for idx, cap in enumerate(captures):
