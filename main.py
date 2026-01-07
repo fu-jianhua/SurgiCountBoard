@@ -191,17 +191,30 @@ def _multi_run():
         model_obj = _load_model(model_path)
         pipelines = []; rois = []
         for idx, cap in enumerate(caps):
-            ok, frame = cap.read();
-            if not ok: continue
-            h,w = frame.shape[:2]; roi = ROIRect(0,0,w-1,h-1); rois.append(roi)
+            ok, frame = cap.read()
+            if ok:
+                h, w = frame.shape[:2]
+                roi = ROIRect(0, 0, w - 1, h - 1)
+            else:
+                roi = None
+            rois.append(roi)
             pl = Pipeline(model=model_obj, conf=conf, iou=iou, use_track=bool(track_enabled), device=dev, half=use_half, imgsz=int(imgsz), max_det=int(max_det), frame_rate=float(cap.get(cv2.CAP_PROP_FPS) or 30.0), seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt") if bool(seg_enabled) else None, line_pos=float(st.session_state.get("line_pos_pct", 70))/100.0, count_mode=str(st.session_state.get("count_mode","line")))
             pipelines.append(pl)
-        grid_cols = 2
-        cont_pairs = []
-        for i in range(len(pipelines)):
-            if i % grid_cols == 0:
-                cols = st.columns(grid_cols*2)
-            cont_pairs.append((cols[(i % grid_cols)*2].empty(), cols[(i % grid_cols)*2+1].empty()))
+        left_col, right_col = st.columns(2)
+        import math
+        def _build_grid(parent, n, grid_cols=2):
+            items = []
+            rows = int(math.ceil(n / float(grid_cols)))
+            idx = 0
+            for _ in range(rows):
+                cols = parent.columns(grid_cols)
+                for c in range(grid_cols):
+                    if idx < n:
+                        items.append(cols[c].empty())
+                        idx += 1
+            return items
+        org_conts = _build_grid(left_col, len(pipelines), grid_cols=2)
+        ann_conts = _build_grid(right_col, len(pipelines), grid_cols=2)
         fusion = MultiCameraFusion(time_thr=0.3, dist_thr=32.0)
         st.session_state.status = "运行中"; _render_status()
         writers = [None]*len(pipelines)
@@ -211,8 +224,12 @@ def _multi_run():
                 for idx, cap in enumerate(caps):
                     if not cap.isOpened():
                         continue
-                    ok, frame = cap.read();
-                    if not ok: continue
+                    ok, frame = cap.read()
+                    if not ok:
+                        continue
+                    if rois[idx] is None:
+                        h, w = frame.shape[:2]
+                        rois[idx] = ROIRect(0, 0, w - 1, h - 1)
                     annotated, counts, events, roi_det = pipelines[idx].process(frame, rois[idx])
                     sf = 480.0 / frame.shape[1] if frame.shape[1] > 480 else 1.0
                     dframe = cv2.resize(frame, (int(frame.shape[1]*sf), int(frame.shape[0]*sf))) if sf!=1.0 else frame
@@ -238,8 +255,8 @@ def _multi_run():
                                 add_fused_event(int(st.session_state.multi_id), float(fts), int(fcls), fusion.dump_members_json(members))
                     if writers[idx] is not None:
                         write_frame(writers[idx], annotated)
-                    cont_pairs[idx][0].image(dframe, channels="BGR", output_format="JPEG")
-                    cont_pairs[idx][1].image(dann, channels="BGR", output_format="JPEG")
+                    org_conts[idx].image(dframe, channels="BGR", output_format="JPEG")
+                    ann_conts[idx].image(dann, channels="BGR", output_format="JPEG")
                 if stop_btn:
                     st.session_state.running = False
                 time.sleep(0.01 if low_latency else 0.03)

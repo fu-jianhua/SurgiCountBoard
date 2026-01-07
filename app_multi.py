@@ -120,6 +120,9 @@ def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
                 ok, frame = cap.read()
                 if not ok:
                     continue
+                if rois[idx] is None:
+                    h, w = frame.shape[:2]
+                    rois[idx] = ROIRect(0, 0, w - 1, h - 1)
                 annotated, counts, events, roi_det = pipelines[idx].process(frame, rois[idx])
                 sf = 480.0 / frame.shape[1] if frame.shape[1] > 480 else 1.0
                 dframe = cv2.resize(frame, (int(frame.shape[1] * sf), int(frame.shape[0] * sf))) if sf != 1.0 else frame
@@ -134,7 +137,7 @@ def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
                 if st.session_state.multi_id is None and det_streak[idx] >= start_frames:
                     roi_meta = "{}"
                     st.session_state.multi_id = start_session("multi", roi_meta, now)
-                if writers[idx] is None and det_streak[idx] >= start_frames and st.session_state.multi_id is not None:
+                if writers[idx] is None and st.session_state.multi_id is not None:
                     out_dir = os.path.join("runs", "surgicountboard")
                     os.makedirs(out_dir, exist_ok=True)
                     out_path = os.path.join(out_dir, f"session_{st.session_state.multi_id}_cam_{idx}.mp4")
@@ -218,11 +221,11 @@ if start_btn and not st.session_state.running:
         rois = []
         for idx, cap in enumerate(captures):
             ret, frame = cap.read()
-            if not ret:
-                st.warning(f"源{idx}无法读取帧")
-                continue
-            h, w = frame.shape[:2]
-            roi = ROIRect(0, 0, w - 1, h - 1)
+            if ret:
+                h, w = frame.shape[:2]
+                roi = ROIRect(0, 0, w - 1, h - 1)
+            else:
+                roi = None
             rois.append(roi)
             pl = Pipeline(
                 model=model_obj,
@@ -243,12 +246,21 @@ if start_btn and not st.session_state.running:
         num = len(pipelines)
         frame_containers.clear()
         ann_containers.clear()
-        cols_rows = []
-        for i in range(num):
-            if i % grid_cols == 0:
-                cols_rows = st.columns(grid_cols * 2)
-            frame_containers.append(cols_rows[(i % grid_cols) * 2].empty())
-            ann_containers.append(cols_rows[(i % grid_cols) * 2 + 1].empty())
+        left_col, right_col = st.columns(2)
+        import math
+        def _build_grid(parent, n, grid_cols=2):
+            items = []
+            rows = int(math.ceil(n / float(grid_cols)))
+            idx = 0
+            for _ in range(rows):
+                cols = parent.columns(grid_cols)
+                for c in range(grid_cols):
+                    if idx < n:
+                        items.append(cols[c].empty())
+                        idx += 1
+            return items
+        frame_containers.extend(_build_grid(left_col, num, grid_cols))
+        ann_containers.extend(_build_grid(right_col, num, grid_cols))
         fusion = MultiCameraFusion(time_thr=0.3, dist_thr=32.0)
         st.session_state.status = "运行中"
         _render_status()
