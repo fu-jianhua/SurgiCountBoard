@@ -138,6 +138,7 @@ def _single_run():
         if st.session_state.session is not None and getattr(st.session_state.session,"current_session_id",None) is not None:
             vp = getattr(st.session_state,"video_path",None)
             end_session(st.session_state.session.current_session_id, time.time(), vp)
+            st.session_state.running_counts = {}
         if st.session_state.cap is not None:
             st.session_state.cap.release(); st.session_state.cap = None
         st.session_state.status = "已停止"; _render_status()
@@ -175,6 +176,7 @@ def _single_run():
                     out_dir = os.path.join("runs","surgicountboard"); os.makedirs(out_dir, exist_ok=True)
                     out_path = os.path.abspath(os.path.join(out_dir, f"session_{sid}.mp4"))
                     st.session_state.video_path = out_path
+                    st.session_state.running_counts = {}
                     est_fps = fps_meter.fps or (st.session_state.cap.get(cv2.CAP_PROP_FPS) or 25)
                     if est_fps is None or est_fps <= 0:
                         est_fps = 10.0
@@ -194,6 +196,7 @@ def _single_run():
                     ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path)
                     if ended is not None:
                         close_writer(st.session_state.writer); st.session_state.writer = None; st.session_state.video_path = None
+                        st.session_state.running_counts = {}
                 if st.session_state.writer is not None:
                     write_frame(st.session_state.writer, annotated)
                 org.image(dframe, channels="BGR", output_format="JPEG")
@@ -255,8 +258,7 @@ def _multi_run():
         fusion = MultiCameraFusion(time_thr=0.3, dist_thr=32.0)
         st.session_state.status = "运行中"; _render_status()
         writers = [None]*len(pipelines)
-        if "multi_counts" not in st.session_state:
-            st.session_state.multi_counts = [{} for _ in pipelines]
+        st.session_state.multi_counts = [{} for _ in pipelines]
         meters = [FPSMeter() for _ in pipelines]
         det_streak = [0]*len(pipelines); no_det_streak = [0]*len(pipelines)
         try:
@@ -310,6 +312,7 @@ def _multi_run():
                             st.session_state.cam_video_paths[idx] = out_path
                         except Exception:
                             pass
+                        st.session_state.multi_counts[idx] = {}
                     for ev in events:
                         ts, cls_id, tid, c, cx, cy = ev
                         if st.session_state.multi_id is not None:
@@ -345,6 +348,10 @@ def _multi_run():
                 except Exception:
                     vp = None
                 end_session(int(st.session_state.multi_id), time.time(), vp)
+            try:
+                st.session_state.multi_counts = [{} for _ in pipelines]
+            except Exception:
+                pass
             for cap in caps:
                 try:
                     cap.release()
@@ -408,7 +415,12 @@ else:
     sid_sel = st.selectbox("选择任务", sid_options, index=0)
     if sid_sel:
         ss = get_session(int(sid_sel))
-        stats = session_stats(int(sid_sel))
+        cams = get_cam_sessions(int(sid_sel))
+        if len(cams) > 0:
+            from core.store import events_final_stats_max
+            stats = events_final_stats_max(int(sid_sel))
+        else:
+            stats = session_stats(int(sid_sel))
         names_cn_map = {
             "tray": "托盘",
             "forceps_01": "镊子01",
@@ -435,7 +447,7 @@ else:
         df_stats = pd.DataFrame({
             "class_id": [int(x[0]) for x in stats],
             "name": [_cn_name(int(x[0])) for x in stats],
-            "count": [x[1] for x in stats],
+            "count": [int(x[1]) for x in stats],
         })
         dc1, dc2 = st.columns(2)
         with dc1:

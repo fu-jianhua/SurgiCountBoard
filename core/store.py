@@ -180,3 +180,23 @@ def get_cam_sessions(multi_id: int):
         (multi_id,),
     )
     return c.fetchall()
+
+def events_cam_stats(multi_id: int):
+    init_db()
+    c = CONN.cursor()
+    c.execute(
+        "SELECT cam_index, class_id, COUNT(DISTINCT track_id) FROM events WHERE multi_id=? GROUP BY cam_index, class_id",
+        (multi_id,),
+    )
+    return c.fetchall()
+
+def events_final_stats_max(multi_id: int):
+    rows = events_cam_stats(int(multi_id))
+    best = {}
+    for cam_index, class_id, cnt in rows:
+        k = int(class_id)
+        v = int(cnt)
+        prev = best.get(k)
+        if prev is None or v > prev:
+            best[k] = v
+    return [(k, best[k]) for k in sorted(best.keys())]

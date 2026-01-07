@@ -174,6 +174,10 @@ def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
                         st.session_state.cam_video_paths[idx] = out_path
                     except Exception:
                         pass
+                    try:
+                        st.session_state.multi_counts[idx] = {}
+                    except Exception:
+                        pass
                 for ev in events:
                     ts, cls_id, tid, c, cx, cy = ev
                     if tid is not None and tid >= 0 and st.session_state.multi_id is not None:
@@ -205,6 +209,10 @@ def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
             except Exception:
                 vp = None
             end_session(int(st.session_state.multi_id), time.time(), vp)
+        try:
+            st.session_state.multi_counts = [{} for _ in captures]
+        except Exception:
+            pass
 
 if stop_btn and st.session_state.running:
     st.session_state.status = "停止中..."
@@ -223,6 +231,10 @@ if stop_btn and st.session_state.running:
             vp = None
         end_session(int(st.session_state.multi_id), time.time(), vp)
         st.session_state.multi_id = None
+    try:
+        st.session_state.multi_counts = [{} for _ in (st.session_state.captures or [])]
+    except Exception:
+        pass
     st.session_state.status = "已停止"
     _render_status()
 
@@ -257,6 +269,7 @@ if start_btn and not st.session_state.running:
         model_obj = _load_model(model_path)
         st.session_state.multi_id = start_session(str(sources_str), "{}", time.time())
         st.session_state.cam_video_paths = [None] * len(captures)
+        st.session_state.multi_counts = [{} for _ in captures]
         pipelines = []
         rois = []
         for idx, cap in enumerate(captures):

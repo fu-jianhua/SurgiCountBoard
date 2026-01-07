@@ -106,6 +106,7 @@ def _run_stream(pipeline, cap, roi, low_latency, stop_btn, org_frame_container, 
                 out_path = os.path.join(out_dir, f"session_{sid}.mp4")
                 out_path = os.path.abspath(out_path)
                 st.session_state.video_path = out_path
+                st.session_state.running_counts = {}
                 st.session_state.writer = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
                 st.toast(f"新会话已开始，ID: {sid}")
             elif st.session_state.writer is not None and roi_det:
