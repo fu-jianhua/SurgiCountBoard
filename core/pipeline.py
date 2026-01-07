@@ -224,7 +224,7 @@ class Pipeline:
                             maj_cls = max(st["labels"].items(), key=lambda kv: kv[1])[0]
                             name = self.names[maj_cls] if maj_cls < len(self.names) else str(maj_cls)
                             counts[name] = counts.get(name, 0) + 1
-                            events.append((ts, int(maj_cls), int(tid), float(c)))
+                            events.append((ts, int(maj_cls), int(tid), float(c), float(cx), float(cy)))
                             st["counted"] = True
                 st["last_cx"] = cx
             remove_tids = []
@@ -241,7 +241,7 @@ class Pipeline:
                 if roi_rect is None or roi_rect.contains(cx, cy):
                     name = self.names[clss[i]] if clss[i] < len(self.names) else str(clss[i])
                     counts[name] = counts.get(name, 0) + 1
-                    events.append((ts, int(clss[i]), -1, float(confs[i]) if i < len(confs) else 0.0))
+                    events.append((ts, int(clss[i]), -1, float(confs[i]) if i < len(confs) else 0.0, float(cx), float(cy)))
         annotated = frame.copy()
         for i in range(len(boxes)):
             if not display_mask[i]:

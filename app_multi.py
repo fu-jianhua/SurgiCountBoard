@@ -9,6 +9,7 @@ from core.roi import ROIRect
 from core.pipeline import Pipeline
 from core.session import SessionManager
 from core.video import open_writer, write_frame, close_writer
+from core.utils import FPSMeter
 from core.multi import MultiCameraFusion, Event
 from core.store import (
     init_db,
@@ -107,6 +108,7 @@ def _close_all(caps):
 
 def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
     writers = [None] * len(captures)
+    meters = [FPSMeter() for _ in captures]
     running_counts: Dict[str, int] = {}
     start_frames = 20
     stop_frames = 20
@@ -128,6 +130,7 @@ def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
                 dframe = cv2.resize(frame, (int(frame.shape[1] * sf), int(frame.shape[0] * sf))) if sf != 1.0 else frame
                 dann = cv2.resize(annotated, (int(annotated.shape[1] * sf), int(annotated.shape[0] * sf))) if sf != 1.0 else annotated
                 now = time.time()
+                meters[idx].tick(now)
                 if roi_det:
                     det_streak[idx] += 1
                     no_det_streak[idx] = 0
@@ -142,19 +145,24 @@ def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
                     os.makedirs(out_dir, exist_ok=True)
                     out_path = os.path.join(out_dir, f"session_{st.session_state.multi_id}_cam_{idx}.mp4")
                     out_path = os.path.abspath(out_path)
-                    writers[idx] = open_writer(out_path, annotated.shape, fps=captures[idx].get(cv2.CAP_PROP_FPS) or 25)
+                    est_fps = meters[idx].fps or (captures[idx].get(cv2.CAP_PROP_FPS) or 25)
+                    if est_fps is None or est_fps <= 0:
+                        est_fps = 10.0
+                    est_fps = float(max(4.0, min(30.0, est_fps)))
+                    writers[idx] = open_writer(out_path, annotated.shape, fps=est_fps)
                     add_cam_session(int(st.session_state.multi_id), int(idx), int(st.session_state.multi_id), out_path)
                     st.toast(f"会话开始：session={st.session_state.multi_id}, cam={idx}")
                     try:
                         st.session_state.cam_video_paths[idx] = out_path
                     except Exception:
                         pass
-                for ts, cls_id, tid, c in events:
+                for ev in events:
+                    ts, cls_id, tid, c, cx, cy = ev
                     if tid is not None and tid >= 0 and st.session_state.multi_id is not None:
                         add_detection(int(st.session_state.multi_id), ts, int(cls_id), int(idx) * 100000 + int(tid), float(c))
-                        ev = Event(ts=ts, class_id=int(cls_id), track_id=int(tid), cam_index=int(idx), x=0.0, y=0.0, conf=float(c))
-                        fusion.push(ev)
-                        add_event(int(st.session_state.multi_id), int(idx), ts, int(cls_id), int(tid), 0.0, 0.0, float(c))
+                        evobj = Event(ts=ts, class_id=int(cls_id), track_id=int(tid), cam_index=int(idx), x=float(cx), y=float(cy), conf=float(c))
+                        fusion.push(evobj)
+                        add_event(int(st.session_state.multi_id), int(idx), ts, int(cls_id), int(tid), float(cx), float(cy), float(c))
                         fused = fusion.try_fuse()
                         if fused is not None:
                             fts, fcls, members = fused

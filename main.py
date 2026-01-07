@@ -6,6 +6,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from core.source import open_capture
+from core.utils import FPSMeter
 from core.roi import ROIRect
 from core.pipeline import Pipeline
 from core.session import SessionManager
@@ -76,6 +77,7 @@ with st.sidebar:
         st.session_state.count_mode = "line" if count_mode_label == "计数线" else "roi"
         line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1)
         st.session_state.line_pos_pct = int(line_pos_slider)
+    fps_box = st.empty()
 
 init_db()
 if "running" not in st.session_state:
@@ -140,6 +142,8 @@ def _single_run():
     if st.session_state.running and st.session_state.cap is not None and st.session_state.pipeline is not None:
         try:
             det_streak = 0; no_det_streak = 0; start_frames = 20; stop_frames = 20
+            fps_meter = FPSMeter()
+            last_ts = time.time()
             while st.session_state.running and st.session_state.cap.isOpened():
                 ok, frame = st.session_state.cap.read()
                 if not ok: break
@@ -148,6 +152,7 @@ def _single_run():
                 dframe = cv2.resize(frame, (int(frame.shape[1]*sf), int(frame.shape[0]*sf))) if sf!=1.0 else frame
                 dann = cv2.resize(annotated, (int(annotated.shape[1]*sf), int(annotated.shape[0]*sf))) if sf!=1.0 else annotated
                 now = time.time()
+                fps_meter.tick(now)
                 if roi_det: det_streak += 1; no_det_streak = 0
                 else: no_det_streak += 1; det_streak = 0
                 if st.session_state.writer is None and det_streak >= start_frames:
@@ -155,11 +160,16 @@ def _single_run():
                     out_dir = os.path.join("runs","surgicountboard"); os.makedirs(out_dir, exist_ok=True)
                     out_path = os.path.abspath(os.path.join(out_dir, f"session_{sid}.mp4"))
                     st.session_state.video_path = out_path
-                    st.session_state.writer = open_writer(out_path, annotated.shape, fps=st.session_state.cap.get(cv2.CAP_PROP_FPS) or 25)
+                    est_fps = fps_meter.fps or (st.session_state.cap.get(cv2.CAP_PROP_FPS) or 25)
+                    if est_fps is None or est_fps <= 0:
+                        est_fps = 10.0
+                    est_fps = float(max(4.0, min(30.0, est_fps)))
+                    st.session_state.writer = open_writer(out_path, annotated.shape, fps=est_fps)
                 elif st.session_state.writer is not None and roi_det:
                     st.session_state.session.on_detection(now)
                 sid = st.session_state.session.current_session_id
-                for ts, cls_id, tid, c in events:
+                for ev in events:
+                    ts, cls_id, tid, c, cx, cy = ev
                     if sid is not None and tid is not None and tid >= 0:
                         add_detection(sid, ts, cls_id, tid, c)
                 if st.session_state.writer is not None and no_det_streak >= stop_frames:
@@ -170,6 +180,12 @@ def _single_run():
                     write_frame(st.session_state.writer, annotated)
                 org.image(dframe, channels="BGR", output_format="JPEG")
                 ann.image(dann, channels="BGR", output_format="JPEG")
+                try:
+                    cur_fps = fps_meter.fps
+                    if cur_fps:
+                        fps_box.markdown(f"处理FPS：{cur_fps:.1f}")
+                except Exception:
+                    pass
                 time.sleep(0.01 if low_latency else 0.03)
         finally:
             if st.session_state.cap is not None:
@@ -221,6 +237,7 @@ def _multi_run():
         fusion = MultiCameraFusion(time_thr=0.3, dist_thr=32.0)
         st.session_state.status = "运行中"; _render_status()
         writers = [None]*len(pipelines)
+        meters = [FPSMeter() for _ in pipelines]
         det_streak = [0]*len(pipelines); no_det_streak = [0]*len(pipelines)
         try:
             while st.session_state.running:
@@ -238,6 +255,7 @@ def _multi_run():
                     dframe = cv2.resize(frame, (int(frame.shape[1]*sf), int(frame.shape[0]*sf))) if sf!=1.0 else frame
                     dann = cv2.resize(annotated, (int(annotated.shape[1]*sf), int(annotated.shape[0]*sf))) if sf!=1.0 else annotated
                     now = time.time()
+                    meters[idx].tick(now)
                     if roi_det: det_streak[idx]+=1; no_det_streak[idx]=0
                     else: no_det_streak[idx]+=1; det_streak[idx]=0
                     if st.session_state.multi_id is None and det_streak[idx] >= 20:
@@ -246,16 +264,23 @@ def _multi_run():
                     if writers[idx] is None and st.session_state.multi_id is not None:
                         out_dir = os.path.join("runs","surgicountboard"); os.makedirs(out_dir, exist_ok=True)
                         out_path = os.path.abspath(os.path.join(out_dir, f"session_{st.session_state.multi_id}_cam_{idx}.mp4"))
-                        writers[idx] = open_writer(out_path, annotated.shape, fps=cap.get(cv2.CAP_PROP_FPS) or 25)
+                        est_fps = meters[idx].fps or (cap.get(cv2.CAP_PROP_FPS) or 25)
+                        if est_fps is None or est_fps <= 0:
+                            est_fps = 10.0
+                        est_fps = float(max(4.0, min(30.0, est_fps)))
+                        writers[idx] = open_writer(out_path, annotated.shape, fps=est_fps)
                         add_cam_session(int(st.session_state.multi_id), int(idx), int(st.session_state.multi_id), out_path)
                         try:
                             st.session_state.cam_video_paths[idx] = out_path
                         except Exception:
                             pass
-                    for ts, cls_id, tid, c in events:
+                    for ev in events:
+                        ts, cls_id, tid, c, cx, cy = ev
                         if st.session_state.multi_id is not None and tid is not None and tid >= 0:
                             add_detection(int(st.session_state.multi_id), ts, int(cls_id), int(idx)*100000 + int(tid), float(c))
-                            add_event(int(st.session_state.multi_id), int(idx), ts, int(cls_id), int(tid), 0.0, 0.0, float(c))
+                            add_event(int(st.session_state.multi_id), int(idx), ts, int(cls_id), int(tid), float(cx), float(cy), float(c))
+                            evobj = Event(ts=ts, class_id=int(cls_id), track_id=int(tid), cam_index=int(idx), x=float(cx), y=float(cy), conf=float(c))
+                            fusion.push(evobj)
                             fused = fusion.try_fuse()
                             if fused is not None:
                                 fts, fcls, members = fused
@@ -264,6 +289,12 @@ def _multi_run():
                         write_frame(writers[idx], annotated)
                     org_conts[idx].image(dframe, channels="BGR", output_format="JPEG")
                     ann_conts[idx].image(dann, channels="BGR", output_format="JPEG")
+                    try:
+                        cur_fps = meters[idx].fps
+                        if cur_fps:
+                            fps_box.markdown(f"处理FPS（cam{idx}）：{cur_fps:.1f}")
+                    except Exception:
+                        pass
                 if stop_btn:
                     st.session_state.running = False
                 time.sleep(0.01 if low_latency else 0.03)
