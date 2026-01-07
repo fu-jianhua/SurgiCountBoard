@@ -200,3 +200,26 @@ def events_final_stats_max(multi_id: int):
         if prev is None or v > prev:
             best[k] = v
     return [(k, best[k]) for k in sorted(best.keys())]
+
+def events_best_camera_stats(multi_id: int):
+    rows = events_cam_stats(int(multi_id))
+    cam_stats = {}
+    cam_totals = {}
+    for cam_index, class_id, cnt in rows:
+        ci = int(cam_index)
+        cid = int(class_id)
+        v = int(cnt)
+        m = cam_stats.get(ci)
+        if m is None:
+            m = {}
+        m[cid] = v
+        cam_stats[ci] = m
+        cam_totals[ci] = int(cam_totals.get(ci, 0)) + v
+    best_ci = None
+    best_sum = -1
+    for ci, s in cam_totals.items():
+        if s > best_sum:
+            best_sum = s
+            best_ci = ci
+    best_map = cam_stats.get(best_ci, {})
+    return [(k, best_map[k]) for k in sorted(best_map.keys())]

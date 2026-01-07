@@ -77,7 +77,12 @@ with st.sidebar:
         st.session_state.count_mode = "roi" if count_mode_label == "ROI" else "line"
         line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1)
         st.session_state.line_pos_pct = int(line_pos_slider)
+        if "final_policy" not in st.session_state:
+            st.session_state.final_policy = "max_camera"
+        final_policy_label = st.selectbox("最终计数策略", ["最大摄像头", "融合事件", "总和"], index=0)
+        st.session_state.final_policy = "max_camera" if final_policy_label == "最大摄像头" else ("fused" if final_policy_label == "融合事件" else "sum")
     fps_box = st.empty()
+    score_box = st.empty()
 
 init_db()
 if "running" not in st.session_state:
@@ -259,6 +264,8 @@ def _multi_run():
         st.session_state.status = "运行中"; _render_status()
         writers = [None]*len(pipelines)
         st.session_state.multi_counts = [{} for _ in pipelines]
+        if "fused_counts" not in st.session_state:
+            st.session_state.fused_counts = {}
         meters = [FPSMeter() for _ in pipelines]
         det_streak = [0]*len(pipelines); no_det_streak = [0]*len(pipelines)
         try:
@@ -325,6 +332,12 @@ def _multi_run():
                             if fused is not None:
                                 fts, fcls, members = fused
                                 add_fused_event(int(st.session_state.multi_id), float(fts), int(fcls), fusion.dump_members_json(members))
+                                try:
+                                    names = list(model_obj.names.values()) if isinstance(model_obj.names, dict) else model_obj.names
+                                    nm = names[int(fcls)] if isinstance(names, (list, tuple)) and int(fcls) < len(names) else str(int(fcls))
+                                    st.session_state.fused_counts[nm] = int(st.session_state.fused_counts.get(nm, 0)) + 1
+                                except Exception:
+                                    pass
                     if writers[idx] is not None:
                         write_frame(writers[idx], annotated)
                     org_conts[idx].image(dframe, channels="BGR", output_format="JPEG")
@@ -335,6 +348,33 @@ def _multi_run():
                             fps_box.markdown(f"处理FPS（cam{idx}）：{cur_fps:.1f}")
                     except Exception:
                         pass
+                try:
+                    policy = str(st.session_state.get("final_policy", "max_camera"))
+                    display_counts = {}
+                    if policy == "max_camera":
+                        best_idx = None
+                        best_sum = -1
+                        for i, mc in enumerate(st.session_state.multi_counts):
+                            s = sum([int(v) for v in mc.values()]) if isinstance(mc, dict) else 0
+                            if s > best_sum:
+                                best_sum = s; best_idx = i
+                        if best_idx is not None:
+                            display_counts = st.session_state.multi_counts[best_idx]
+                    elif policy == "sum":
+                        agg = {}
+                        for mc in st.session_state.multi_counts:
+                            for k, v in mc.items():
+                                agg[k] = int(agg.get(k, 0)) + int(v)
+                        display_counts = agg
+                    else:
+                        display_counts = dict(st.session_state.get("fused_counts", {}))
+                    if isinstance(display_counts, dict):
+                        items = "".join([f"<div style='padding:4px 8px; border-radius:6px; background:#111827; color:#fff; display:inline-block; margin:4px 6px; font-size:14px;'>{k}: {int(v)}</div>" for k, v in sorted(display_counts.items())])
+                        empty_html = "<span style=\"color:#6b7280\">暂无计数</span>"
+                        content_html = items if items else empty_html
+                        score_box.markdown(f"<div style='padding:8px 12px; border-radius:8px; background:#e5e7eb;'>{content_html}</div>", unsafe_allow_html=True)
+                except Exception:
+                    pass
                 if stop_btn:
                     st.session_state.running = False
                 time.sleep(0.01 if low_latency else 0.03)
@@ -350,6 +390,7 @@ def _multi_run():
                 end_session(int(st.session_state.multi_id), time.time(), vp)
             try:
                 st.session_state.multi_counts = [{} for _ in pipelines]
+                st.session_state.fused_counts = {}
             except Exception:
                 pass
             for cap in caps:
@@ -417,8 +458,8 @@ else:
         ss = get_session(int(sid_sel))
         cams = get_cam_sessions(int(sid_sel))
         if len(cams) > 0:
-            from core.store import events_final_stats_max
-            stats = events_final_stats_max(int(sid_sel))
+            from core.store import events_best_camera_stats
+            stats = events_best_camera_stats(int(sid_sel))
         else:
             stats = session_stats(int(sid_sel))
         names_cn_map = {
