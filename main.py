@@ -73,7 +73,7 @@ with st.sidebar:
             st.session_state.line_pos_pct = 60
         if "count_mode" not in st.session_state:
             st.session_state.count_mode = "line"
-        count_mode_label = st.selectbox("计数方式", ["计数线", "ROI"], index=0 if st.session_state.count_mode == "line" else 1)
+        count_mode_label = st.selectbox("计数方式", ["ROI", "计数线"], index=0 if st.session_state.count_mode == "line" else 1)
         st.session_state.count_mode = "line" if count_mode_label == "计数线" else "roi"
         line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1)
         st.session_state.line_pos_pct = int(line_pos_slider)
