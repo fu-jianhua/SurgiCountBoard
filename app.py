@@ -171,11 +171,11 @@ with st.sidebar:
         if "line_pos_pct" not in st.session_state:
             st.session_state.line_pos_pct = 60
         if "count_mode" not in st.session_state:
-            st.session_state.count_mode = "line"
+            st.session_state.count_mode = "roi"
         is_running = bool(st.session_state.get("running", False))
         line_move_step_pct = st.number_input("计数线移动步长(%)", min_value=1, max_value=50, value=5, step=1, disabled=is_running)
-        count_mode_label = st.selectbox("计数方式", ["计数线", "ROI"], index=0 if st.session_state.count_mode == "line" else 1)
-        st.session_state.count_mode = "line" if count_mode_label == "计数线" else "roi"
+        count_mode_label = st.selectbox("计数方式", ["ROI", "计数线"], index=0 if st.session_state.count_mode == "roi" else 1)
+        st.session_state.count_mode = "roi" if count_mode_label == "ROI" else "line"
         line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1, disabled=(is_running or st.session_state.count_mode != "line"))
         if not is_running:
             st.session_state.line_pos_pct = int(line_pos_slider)
@@ -293,7 +293,7 @@ if start_btn and not st.session_state.running:
             frame_rate=float(cap.get(cv2.CAP_PROP_FPS) or 30.0),
             seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt") if bool(seg_enabled) else None,
             line_pos=float(st.session_state.get("line_pos_pct", 70)) / 100.0,
-            count_mode=str(st.session_state.get("count_mode", "line")),
+            count_mode=str(st.session_state.get("count_mode", "roi")),
         )
         st.session_state.pipeline = pipeline
         ret, frame = cap.read()

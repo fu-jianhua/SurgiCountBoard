@@ -71,9 +71,9 @@ with st.sidebar:
         if "line_pos_pct" not in st.session_state:
             st.session_state.line_pos_pct = 60
         if "count_mode" not in st.session_state:
-            st.session_state.count_mode = "line"
-        count_mode_label = st.selectbox("计数方式", ["计数线", "ROI"], index=0 if st.session_state.count_mode == "line" else 1)
-        st.session_state.count_mode = "line" if count_mode_label == "计数线" else "roi"
+            st.session_state.count_mode = "roi"
+        count_mode_label = st.selectbox("计数方式", ["ROI", "计数线"], index=0 if st.session_state.count_mode == "roi" else 1)
+        st.session_state.count_mode = "roi" if count_mode_label == "ROI" else "line"
         line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1)
         st.session_state.line_pos_pct = int(line_pos_slider)
 
@@ -109,6 +109,8 @@ def _close_all(caps):
 def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
     writers = [None] * len(captures)
     meters = [FPSMeter() for _ in captures]
+    if "multi_counts" not in st.session_state:
+        st.session_state.multi_counts = [{} for _ in captures]
     running_counts: Dict[str, int] = {}
     start_frames = 20
     stop_frames = 20
@@ -126,6 +128,22 @@ def _run_multi(pipelines, captures, rois, fusion: MultiCameraFusion, stop_btn):
                     h, w = frame.shape[:2]
                     rois[idx] = ROIRect(0, 0, w - 1, h - 1)
                 annotated, counts, events, roi_det = pipelines[idx].process(frame, rois[idx])
+                if isinstance(counts, dict) and len(counts) > 0:
+                    mc = st.session_state.multi_counts[idx]
+                    for k, v in counts.items():
+                        mc[k] = int(mc.get(k, 0)) + int(v)
+                    st.session_state.multi_counts[idx] = mc
+                curc = st.session_state.multi_counts[idx]
+                if isinstance(curc, dict) and len(curc) > 0:
+                    ov = annotated.copy()
+                    box_h = 28 * (len(curc) + 1)
+                    cv2.rectangle(ov, (8, 8), (280, 8 + box_h), (0, 0, 0), -1)
+                    annotated = cv2.addWeighted(ov, 0.35, annotated, 0.65, 0)
+                    y = 32
+                    for k in sorted(curc.keys()):
+                        v = curc[k]
+                        cv2.putText(annotated, f"{k}: {v}", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                        y += 26
                 sf = 480.0 / frame.shape[1] if frame.shape[1] > 480 else 1.0
                 dframe = cv2.resize(frame, (int(frame.shape[1] * sf), int(frame.shape[0] * sf))) if sf != 1.0 else frame
                 dann = cv2.resize(annotated, (int(annotated.shape[1] * sf), int(annotated.shape[0] * sf))) if sf != 1.0 else annotated
@@ -261,7 +279,7 @@ if start_btn and not st.session_state.running:
                 frame_rate=float(cap.get(cv2.CAP_PROP_FPS) or 30.0),
                 seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt") if bool(seg_enabled) else None,
                 line_pos=float(st.session_state.get("line_pos_pct", 70)) / 100.0,
-                count_mode=str(st.session_state.get("count_mode", "line")),
+                count_mode=str(st.session_state.get("count_mode", "roi")),
             )
             pipelines.append(pl)
         grid_cols = 2

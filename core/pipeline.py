@@ -30,7 +30,7 @@ class Pipeline:
         frame_rate: float = 30.0,
         agnostic_nms: bool = True,
         dedup_iou: float = 0.65,
-        count_mode: str = "line",
+        count_mode: str = "roi",
     ):
         self.model = model if model is not None else YOLO(model_path)
         self.conf = conf
