@@ -110,10 +110,13 @@ def _run_stream(pipeline, cap, roi, low_latency, stop_btn, org_frame_container, 
                 st.toast(f"新会话已开始，ID: {sid}")
             elif st.session_state.writer is not None and roi_det:
                 st.session_state.session.on_detection(now)
+            if st.session_state.session is not None and st.session_state.session.current_session_id is None and len(events) > 0:
+                st.session_state.session.on_detection(now)
             sid_for_events = st.session_state.session.current_session_id if st.session_state.session is not None else None
             for ts, cls_id, tid, c in events:
-                if sid_for_events is not None and tid is not None and tid >= 0:
-                    add_detection(sid_for_events, ts, cls_id, tid, c)
+                if sid_for_events is not None:
+                    pid = int(tid) if tid is not None and int(tid) >= 0 else int(ts * 1000)
+                    add_detection(int(sid_for_events), float(ts), int(cls_id), int(pid), float(c))
             ended = None
             if st.session_state.writer is not None and no_det_streak >= stop_frames:
                 ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path if "video_path" in st.session_state else None)

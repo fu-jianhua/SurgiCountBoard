@@ -182,11 +182,14 @@ def _single_run():
                     st.session_state.writer = open_writer(out_path, annotated.shape, fps=est_fps)
                 elif st.session_state.writer is not None and roi_det:
                     st.session_state.session.on_detection(now)
+                if st.session_state.session.current_session_id is None and len(events) > 0:
+                    st.session_state.session.on_detection(now)
                 sid = st.session_state.session.current_session_id
                 for ev in events:
                     ts, cls_id, tid, c, cx, cy = ev
-                    if sid is not None and tid is not None and tid >= 0:
-                        add_detection(sid, ts, cls_id, tid, c)
+                    if sid is not None:
+                        pid = int(tid) if tid is not None and int(tid) >= 0 else int(ts * 1000)
+                        add_detection(int(sid), float(ts), int(cls_id), int(pid), float(c))
                 if st.session_state.writer is not None and no_det_streak >= stop_frames:
                     ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path)
                     if ended is not None:
@@ -309,10 +312,11 @@ def _multi_run():
                             pass
                     for ev in events:
                         ts, cls_id, tid, c, cx, cy = ev
-                        if st.session_state.multi_id is not None and tid is not None and tid >= 0:
-                            add_detection(int(st.session_state.multi_id), ts, int(cls_id), int(idx)*100000 + int(tid), float(c))
-                            add_event(int(st.session_state.multi_id), int(idx), ts, int(cls_id), int(tid), float(cx), float(cy), float(c))
-                            evobj = Event(ts=ts, class_id=int(cls_id), track_id=int(tid), cam_index=int(idx), x=float(cx), y=float(cy), conf=float(c))
+                        if st.session_state.multi_id is not None:
+                            pid = int(idx)*100000 + (int(tid) if tid is not None and int(tid) >= 0 else int(ts*1000))
+                            add_detection(int(st.session_state.multi_id), ts, int(cls_id), int(pid), float(c))
+                            add_event(int(st.session_state.multi_id), int(idx), ts, int(cls_id), int(pid), float(cx), float(cy), float(c))
+                            evobj = Event(ts=ts, class_id=int(cls_id), track_id=int(pid), cam_index=int(idx), x=float(cx), y=float(cy), conf=float(c))
                             fusion.push(evobj)
                             fused = fusion.try_fuse()
                             if fused is not None:
