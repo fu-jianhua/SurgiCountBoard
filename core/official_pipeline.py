@@ -167,7 +167,7 @@ class MyRegionCounter(BaseSolution):
         if self.region is None:
             self.initialize_region()
         if not isinstance(self.region, dict):  # Ensure self.region is initialized and structured as a dictionary
-            self.region = {"Region#01": self.region}
+            self.region = {"": self.region}
         for i, (name, pts) in enumerate(self.region.items()):
             region = self.add_region(name, pts, colors(i, True), (255, 255, 255))
             region["prepared_polygon"] = self.prep(region["polygon"])
@@ -202,14 +202,6 @@ class MyRegionCounter(BaseSolution):
             pts = list(map(tuple, np.array(poly.exterior.coords, dtype=np.int32)))
             (x1, y1), (x2, y2) = [(int(poly.centroid.x), int(poly.centroid.y))] * 2
             annotator.draw_region(pts, region["region_color"], self.line_width * 2)
-            annotator.adaptive_label(
-                [x1, y1, x2, y2],
-                label=str(region["counts"]),
-                color=region["region_color"],
-                txt_color=region["text_color"],
-                margin=self.line_width * 4,
-                shape="rect",
-            )
             region["counts"] = 0  # Reset for next frame
         plot_im = annotator.result()
         self.display_output(plot_im)
@@ -236,6 +228,7 @@ class OfficialPipeline:
         self.count_mode = str(count_mode)
         self._sol = None
         self._mode = None
+        self._seen_tracks = set()
 
     def _roi_points(self, roi):
         x1, y1, x2, y2 = roi.x1, roi.y1, roi.x2, roi.y2
@@ -276,12 +269,40 @@ class OfficialPipeline:
         # 获取目标详细信息
         target_infos = getattr(results, "target_infos", [])
         
-        for key in ("region_counts", "in_count"):
-            val = getattr(results, key, None)
-            if isinstance(val, dict) and val:
-                counts = {str(k): int(v) for k, v in val.items()}
-                break
-        roi_det = bool(counts)
+        # 按模式提取或计算按类别计数
+        if self._mode == "line":
+            cw = getattr(results, "classwise_count", None)
+            if isinstance(cw, dict) and cw:
+                for k, v in cw.items():
+                    try:
+                        s = int(v.get("IN", 0)) + int(v.get("OUT", 0))
+                    except Exception:
+                        s = int(v) if isinstance(v, (int, float)) else 0
+                    if s > 0:
+                        counts[str(k)] = counts.get(str(k), 0) + s
+        else:
+            # ROI/区域模式：仅在轨迹首次进入 ROI 时计数一次
+            target_infos = getattr(results, "target_infos", [])
+            roi_hit = False
+            if isinstance(target_infos, list) and target_infos:
+                for info in target_infos:
+                    name = info.get("class_name") or str(info.get("class_id", 0))
+                    track_id = info.get("track_id", 0)
+                    centroid = info.get("centroid")
+                    if not (isinstance(centroid, (list, tuple, np.ndarray)) and len(centroid) >= 2):
+                        bbox = info.get("bbox")
+                        if isinstance(bbox, (list, tuple, np.ndarray)) and len(bbox) >= 4:
+                            cx = (bbox[0] + bbox[2]) / 2
+                            cy = (bbox[1] + bbox[3]) / 2
+                            centroid = (cx, cy)
+                        else:
+                            centroid = (0, 0)
+                    inside = roi is not None and roi.contains(float(centroid[0]), float(centroid[1]))
+                    roi_hit = roi_hit or inside
+                    if inside and track_id not in self._seen_tracks:
+                        counts[str(name)] = int(counts.get(str(name), 0)) + 1
+                        self._seen_tracks.add(track_id)
+            roi_det = roi_hit
         events = []
         for info in target_infos:
             # 转换为 (ts, cls_id, track_id, conf, centroid_x, centroid_y) 格式
@@ -299,5 +320,6 @@ class OfficialPipeline:
                 else:
                     centroid = (0, 0)
             events.append((ts, cls_id, track_id, conf, float(centroid[0]), float(centroid[1])))
+        # print(f"================annotated：{annotated.shape}, counts: {counts}, events: {events}, roi_det: {roi_det}, target_infos: {target_infos}====================")
         return annotated, counts, events, roi_det, target_infos
 
