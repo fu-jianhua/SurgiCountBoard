@@ -8,10 +8,10 @@ import numpy as np
 from core.source import open_capture
 from core.utils import FPSMeter
 from core.roi import ROIRect
-from core.pipeline import Pipeline
 from core.session import SessionManager
 from core.video import open_writer, write_frame, close_writer
 from core.multi import MultiCameraFusion, Event
+from core.official_pipeline import OfficialPipeline
 from core.store import (
     init_db,
     add_detection,
@@ -63,7 +63,7 @@ with st.sidebar:
         half = st.checkbox("FP16 半精度", True)
         low_latency = st.checkbox("低延迟模式", False)
     with st.expander("推理与跟踪", expanded=False):
-        # 检测与跟踪相关参数：影响实时检测稳定性与“一轨一计”
+        # 检测与跟踪相关参数：影响实时检测稳定性与"一轨一计"
         conf = st.slider("置信度", 0.0, 1.0, 0.25, 0.01)
         iou = st.slider("IoU", 0.0, 1.0, 0.45, 0.01)
         track_enabled = st.checkbox("启用跟踪", True)
@@ -71,7 +71,7 @@ with st.sidebar:
         imgsz = st.number_input("推理分辨率(imgsz)", min_value=256, max_value=1280, value=640, step=64)
         max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
     with st.expander("会话与ROI", expanded=False):
-        # 会话空窗时间与 ROI/计数线设置；计数线位置仅在“计数线”模式下可视预览
+        # 会话空窗时间与 ROI/计数线设置；计数线位置仅在"计数线"模式下可视预览
         idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
         if "line_pos_pct" not in st.session_state:
             st.session_state.line_pos_pct = 60
@@ -81,7 +81,7 @@ with st.sidebar:
         st.session_state.count_mode = "roi" if count_mode_label == "ROI" else "line"
         line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1)
         st.session_state.line_pos_pct = int(line_pos_slider)
-        # 最终计数策略：简化为“最大摄像头”（总数与种类最多的一路）
+        # 最终计数策略：简化为"最大摄像头"（总数与种类最多的一路）
         st.session_state.final_policy = "max_camera"
     fps_box = st.empty()
     score_box = st.empty()
@@ -117,54 +117,90 @@ def _single_run():
     if "running_counts" not in st.session_state:
         st.session_state.running_counts = {}
     if start_btn and not st.session_state.running:
-        # 打开摄像头、加载模型、构建 Pipeline，初始化 ROI 与会话
-        st.session_state.status = "启动中..."; _render_status(); st.session_state.running = True
-        cap = open_capture(source_str, low_latency=low_latency); st.session_state.cap = cap
+        # 打开摄像头、构建 OfficialPipeline，初始化 ROI 与会话
+        st.session_state.status = "启动中..."
+        _render_status()
+        st.session_state.running = True
+        cap = open_capture(source_str, low_latency=low_latency)
+        st.session_state.cap = cap
         if not cap.isOpened():
-            st.error("无法打开视频源"); st.session_state.running = False; _render_status(); return
+            st.error("无法打开视频源")
+            st.session_state.running = False
+            _render_status()
+            return
         dev = int(device_inp) if device_inp.isdigit() else device_inp
         use_half = half
         if isinstance(dev, int) and not torch.cuda.is_available():
-            dev = "cpu"; use_half = False
+            dev = "cpu"
+            use_half = False
         if isinstance(dev, str) and dev.lower() == "cpu":
             use_half = False
-        model_obj = _load_model(model_path)
-        # 管线参数包含：检测阈值/分辨率、是否跟踪、计数方式与计数线位置
-        pipeline = Pipeline(model=model_obj, conf=conf, iou=iou, use_track=bool(track_enabled), device=dev, half=use_half, imgsz=int(imgsz), max_det=int(max_det), frame_rate=float(cap.get(cv2.CAP_PROP_FPS) or 30.0), seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt") if bool(seg_enabled) else None, line_pos=float(st.session_state.get("line_pos_pct", 70))/100.0, count_mode=str(st.session_state.get("count_mode","roi")))
+            
+        # 使用 OfficialPipeline，不再需要单独的模型对象
+        pipeline = OfficialPipeline(
+            model_path=model_path,
+            conf=conf,
+            iou=iou,
+            device=dev,
+            half=use_half,
+            imgsz=int(imgsz),
+            max_det=int(max_det),
+            use_track=bool(track_enabled),
+            line_pos=float(st.session_state.get("line_pos_pct", 70))/100.0,
+            count_mode=str(st.session_state.get("count_mode", "roi"))
+        )
         st.session_state.pipeline = pipeline
         ok, frame = cap.read()
         if not ok:
-            st.error("无法读取帧"); st.session_state.running = False; _render_status(); return
+            st.error("无法读取帧")
+            st.session_state.running = False
+            _render_status()
+            return
         h,w = frame.shape[:2]
         # 默认 ROI 为全画面（也可替换为自定义矩形或多边形）
         roi = ROIRect(0,0,w-1,h-1)
         st.session_state.session = SessionManager(camera_id=str(source_str), idle_seconds=int(idle_seconds), roi_json=roi.to_json())
         st.session_state.roi = roi
-        st.session_state.status = "运行中"; _render_status()
+        st.session_state.status = "运行中"
+        _render_status()
     # 停止按钮：关闭视频写入器、结束会话、重置计数
     if stop_btn and st.session_state.running:
         st.session_state.running = False
         if st.session_state.writer is not None:
-            close_writer(st.session_state.writer); st.session_state.writer = None
+            close_writer(st.session_state.writer)
+            st.session_state.writer = None
         if st.session_state.session is not None and getattr(st.session_state.session,"current_session_id",None) is not None:
             vp = getattr(st.session_state,"video_path",None)
             end_session(st.session_state.session.current_session_id, time.time(), vp)
             st.session_state.running_counts = {}
         if st.session_state.cap is not None:
-            st.session_state.cap.release(); st.session_state.cap = None
-        st.session_state.status = "已停止"; _render_status()
+            st.session_state.cap.release()
+            st.session_state.cap = None
+        st.session_state.status = "已停止"
+        _render_status()
     # 运行中：实时循环读取帧、处理、计数、显示、会话管理、视频写入
     if st.session_state.running and st.session_state.cap is not None and st.session_state.pipeline is not None:
         try:
             # 实时循环：读取帧 -> pipeline.process -> 累计计数/叠加显示 -> 会话起止与视频写入
-            det_streak = 0; no_det_streak = 0; start_frames = 20; stop_frames = 20
+            det_streak = 0
+            no_det_streak = 0
+            start_frames = 20
+            stop_frames = 20
             fps_meter = FPSMeter()
             last_ts = time.time()
             while st.session_state.running and st.session_state.cap.isOpened():
                 ok, frame = st.session_state.cap.read()
                 if not ok: break
-                # 处理当前帧, 调用 pipeline.process 进行检测、跟踪、计数、可视化， 获得标注帧、计数结果、事件列表、ROI 内是否有检测
-                annotated, counts, events, roi_det = st.session_state.pipeline.process(frame, st.session_state.roi)
+                # 处理当前帧, 调用 pipeline.process 进行检测、跟踪、计数、可视化
+                # OfficialPipeline.process 返回 (annotated, counts, events, roi_det, target_infos)
+                annotated, counts, events, roi_det, target_infos = st.session_state.pipeline.process(frame, st.session_state.roi)
+                
+                # 打印目标信息用于调试
+                if target_infos and len(target_infos) > 0:
+                    print(f"检测到 {len(target_infos)} 个目标:")
+                    for info in target_infos:
+                        print(f"  Track ID: {info.get('track_id')}, Class: {info.get('class_name')}, Confidence: {info.get('confidence'):.2f}")
+                
                 # 计数累加到运行会话计数并在右侧叠加小面板显示
                 if isinstance(counts, dict) and len(counts) > 0:
                     for k, v in counts.items():
@@ -185,12 +221,17 @@ def _single_run():
                 now = time.time()
                 fps_meter.tick(now)
                 # ROI 内有检测则递增 det_streak，否则递增 no_det_streak，用于会话开始/结束判定
-                if roi_det: det_streak += 1; no_det_streak = 0
-                else: no_det_streak += 1; det_streak = 0
+                if roi_det: 
+                    det_streak += 1
+                    no_det_streak = 0
+                else: 
+                    no_det_streak += 1
+                    det_streak = 0
                 if st.session_state.writer is None and det_streak >= start_frames:
                     # 会话启动并创建视频写入器，清空运行计数
                     sid = st.session_state.session.on_detection(now)
-                    out_dir = os.path.join("runs","surgicountboard"); os.makedirs(out_dir, exist_ok=True)
+                    out_dir = os.path.join("runs","surgicountboard")
+                    os.makedirs(out_dir, exist_ok=True)
                     out_path = os.path.abspath(os.path.join(out_dir, f"session_{sid}.mp4"))
                     st.session_state.video_path = out_path
                     st.session_state.running_counts = {}
@@ -202,10 +243,12 @@ def _single_run():
                 elif st.session_state.writer is not None and roi_det:
                     # 有检测活动则更新会话最后检测时间，防止提前结束
                     st.session_state.session.on_detection(now)
-                if st.session_state.session.current_session_id is None and len(events) > 0:
-                    st.session_state.session.on_detection(now)
+                # if st.session_state.session.current_session_id is None and len(events) > 0:
+                #     st.session_state.session.on_detection(now)
+                
                 sid = st.session_state.session.current_session_id
                 # 写入检测事件到数据库（去重按 session_id+class_id+track_id）
+                # 注意：OfficialPipeline 目前返回的 events 为空列表，需要后续扩展
                 for ev in events:
                     ts, cls_id, tid, c, cx, cy = ev
                     if sid is not None:
@@ -215,42 +258,57 @@ def _single_run():
                     # 空窗达到阈值则结束会话并关闭视频写入器
                     ended = st.session_state.session.check_idle_and_end(now, st.session_state.video_path)
                     if ended is not None:
-                        close_writer(st.session_state.writer); st.session_state.writer = None; st.session_state.video_path = None
+                        close_writer(st.session_state.writer)
+                        st.session_state.writer = None
+                        st.session_state.video_path = None
                         st.session_state.running_counts = {}
+                        
                 if st.session_state.writer is not None:
                     write_frame(st.session_state.writer, annotated)
+                    
                 org.image(dframe, channels="BGR", output_format="JPEG")
                 ann.image(dann, channels="BGR", output_format="JPEG")
+                
                 try:
                     cur_fps = fps_meter.fps
                     if cur_fps:
                         fps_box.markdown(f"处理FPS：{cur_fps:.1f}")
                 except Exception:
                     pass
+                
                 time.sleep(0.01 if low_latency else 0.03)
         finally:
             if st.session_state.cap is not None:
-                st.session_state.cap.release(); st.session_state.cap = None
+                st.session_state.cap.release()
+                st.session_state.cap = None
 
 def _multi_run():
-    # 多摄像头流程：为每路构建 Pipeline 与 ROI，循环处理并以“最大摄像头”展示最终计数
+    # 多摄像头流程：为每路构建 Pipeline 与 ROI，循环处理并以"最大摄像头"展示最终计数
     if "multi_id" not in st.session_state:
         st.session_state.multi_id = None
     srcs = [s.strip() for s in source_str.split(",") if s.strip()]
     if start_btn and not st.session_state.running:
-        st.session_state.status = "启动中..."; _render_status(); st.session_state.running = True
-        caps = _open_sources(srcs, low_latency); st.session_state.captures = caps
+        st.session_state.status = "启动中..."
+        _render_status()
+        st.session_state.running = True
+        caps = _open_sources(srcs, low_latency)
+        st.session_state.captures = caps
         dev = int(device_inp) if device_inp.isdigit() else device_inp
         use_half = half
         if isinstance(dev, int) and not torch.cuda.is_available():
-            dev = "cpu"; use_half = False
+            dev = "cpu"
+            use_half = False
         if isinstance(dev, str) and dev.lower() == "cpu":
             use_half = False
+            
+        # 加载模型对象用于获取类别名称（用于融合事件的显示）
         model_obj = _load_model(model_path)
+        
         # 立即创建多摄像头会话，camera_id 保存为多源字符串，保证统一的 start/end
         st.session_state.multi_id = start_session(str(source_str), "{}", time.time())
         st.session_state.cam_video_paths = [None] * len(caps)
-        pipelines = []; rois = []
+        pipelines = []
+        rois = []
         for idx, cap in enumerate(caps):
             ok, frame = cap.read()
             if ok:
@@ -259,7 +317,19 @@ def _multi_run():
             else:
                 roi = None
             rois.append(roi)
-            pl = Pipeline(model=model_obj, conf=conf, iou=iou, use_track=bool(track_enabled), device=dev, half=use_half, imgsz=int(imgsz), max_det=int(max_det), frame_rate=float(cap.get(cv2.CAP_PROP_FPS) or 30.0), seg_model=os.path.join(os.path.dirname(__file__), "yolo11x-seg.pt") if bool(seg_enabled) else None, line_pos=float(st.session_state.get("line_pos_pct", 70))/100.0, count_mode=str(st.session_state.get("count_mode","roi")))
+            # 使用 OfficialPipeline
+            pl = OfficialPipeline(
+                model_path=model_path,
+                conf=conf,
+                iou=iou,
+                device=dev,
+                half=use_half,
+                imgsz=int(imgsz),
+                max_det=int(max_det),
+                use_track=bool(track_enabled),
+                line_pos=float(st.session_state.get("line_pos_pct", 70))/100.0,
+                count_mode=str(st.session_state.get("count_mode", "roi"))
+            )
             pipelines.append(pl)
         left_col, right_col = st.columns(2)
         import math
@@ -277,13 +347,15 @@ def _multi_run():
         org_conts = _build_grid(left_col, len(pipelines), grid_cols=2)
         ann_conts = _build_grid(right_col, len(pipelines), grid_cols=2)
         fusion = MultiCameraFusion(time_thr=0.3, dist_thr=32.0)
-        st.session_state.status = "运行中"; _render_status()
+        st.session_state.status = "运行中"
+        _render_status()
         writers = [None]*len(pipelines)
         st.session_state.multi_counts = [{} for _ in pipelines]
         if "fused_counts" not in st.session_state:
             st.session_state.fused_counts = {}
         meters = [FPSMeter() for _ in pipelines]
-        det_streak = [0]*len(pipelines); no_det_streak = [0]*len(pipelines)
+        det_streak = [0]*len(pipelines)
+        no_det_streak = [0]*len(pipelines)
         try:
             while st.session_state.running:
                 for idx, cap in enumerate(caps):
@@ -295,7 +367,13 @@ def _multi_run():
                     if rois[idx] is None:
                         h, w = frame.shape[:2]
                         rois[idx] = ROIRect(0, 0, w - 1, h - 1)
-                    annotated, counts, events, roi_det = pipelines[idx].process(frame, rois[idx])
+                    annotated, counts, events, roi_det, target_infos = pipelines[idx].process(frame, rois[idx])
+                    # 打印目标信息用于调试
+                    if target_infos and len(target_infos) > 0:
+                        print(f"检测到 {len(target_infos)} 个目标:")
+                        for info in target_infos:
+                            print(f"  Track ID: {info.get('track_id')}, Class: {info.get('class_name')}, Confidence: {info.get('confidence'):.2f}")
+                    
                     # 累加每路计数并叠加显示在该路画面上
                     if isinstance(counts, dict) and len(counts) > 0:
                         mc = st.session_state.multi_counts[idx]
@@ -318,13 +396,18 @@ def _multi_run():
                     dann = cv2.resize(annotated, (int(annotated.shape[1]*sf), int(annotated.shape[0]*sf))) if sf!=1.0 else annotated
                     now = time.time()
                     meters[idx].tick(now)
-                    if roi_det: det_streak[idx]+=1; no_det_streak[idx]=0
-                    else: no_det_streak[idx]+=1; det_streak[idx]=0
+                    if roi_det: 
+                        det_streak[idx]+=1
+                        no_det_streak[idx]=0
+                    else: 
+                        no_det_streak[idx]+=1
+                        det_streak[idx]=0
                     if st.session_state.multi_id is None and det_streak[idx] >= 20:
                         st.session_state.multi_id = start_session("multi", "{}", now)
                     # 一旦多摄像头会话创建，立即为每路开启写入器，确保文件存在
                     if writers[idx] is None and st.session_state.multi_id is not None:
-                        out_dir = os.path.join("runs","surgicountboard"); os.makedirs(out_dir, exist_ok=True)
+                        out_dir = os.path.join("runs","surgicountboard")
+                        os.makedirs(out_dir, exist_ok=True)
                         out_path = os.path.abspath(os.path.join(out_dir, f"session_{st.session_state.multi_id}_cam_{idx}.mp4"))
                         est_fps = meters[idx].fps or (cap.get(cv2.CAP_PROP_FPS) or 25)
                         if est_fps is None or est_fps <= 0:
@@ -337,6 +420,7 @@ def _multi_run():
                         except Exception:
                             pass
                         
+                    # 注意：OfficialPipeline 目前返回的 events 为空列表，需要后续扩展
                     for ev in events:
                         ts, cls_id, tid, c, cx, cy = ev
                         if st.session_state.multi_id is not None:
@@ -365,7 +449,7 @@ def _multi_run():
                             fps_box.markdown(f"处理FPS（cam{idx}）：{cur_fps:.1f}")
                     except Exception:
                         pass
-                # 最终计数展示：统一选择“最大摄像头”（总数与种类最多）
+                # 最终计数展示：统一选择"最大摄像头"（总数与种类最多）
                 display_counts = {}
                 best_idx = None
                 best_sum = -1
@@ -374,7 +458,9 @@ def _multi_run():
                     s = sum([int(v) for v in mc.values()]) if isinstance(mc, dict) else 0
                     kds = (len([1 for v in mc.values() if int(v) > 0]) if isinstance(mc, dict) else 0)
                     if s > best_sum or (s == best_sum and kds > best_kinds):
-                        best_sum = s; best_kinds = kds; best_idx = i
+                        best_sum = s
+                        best_kinds = kds
+                        best_idx = i
                 if best_idx is not None:
                     display_counts = st.session_state.multi_counts[best_idx]
                 if isinstance(display_counts, dict):
@@ -421,7 +507,8 @@ def _multi_run():
                 cap.release()
         except Exception:
             pass
-        st.session_state.status = "已停止"; _render_status()
+        st.session_state.status = "已停止"
+        _render_status()
 
 if mode == "单摄像头":
     _single_run()
