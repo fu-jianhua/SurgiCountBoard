@@ -5,6 +5,7 @@ import threading
 import time
 
 class HTTPMJPEGCapture:
+    # 简易 HTTP MJPEG 拉流：读取字节流，解析 JPEG 帧，减少缓冲避免高延迟
     def __init__(self, url: str, timeout: float = 5.0):
         self.url = url
         self.timeout = timeout
@@ -21,7 +22,7 @@ class HTTPMJPEGCapture:
     def read(self):
         if self.response is None:
             return False, None
-        # Read chunks until we have at least one full JPEG frame. Always decode the latest frame to reduce latency.
+        # 读取块直到得到一个完整 JPEG 帧；始终解码最新帧以降低延迟
         while True:
             start = self.buffer.rfind(b"\xff\xd8")
             end = self.buffer.rfind(b"\xff\xd9")
@@ -57,6 +58,7 @@ class HTTPMJPEGCapture:
         return 0
 
 class BackgroundCapture:
+    # 后台采集包装：在低延迟模式下开启后台线程持续读帧，主线程 read() 直接取最新帧
     def __init__(self, cap):
         self.cap = cap
         self.frame = None
@@ -111,12 +113,15 @@ class BackgroundCapture:
             return 0
 
 def _set_low_buffer(cap):
+    # 将缓冲区设置为最小，减少延迟与积帧
     try:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     except Exception:
         pass
 
 def open_capture(source: str | int, low_latency: bool = False):
+    # 打开视频源：本地设备索引/文件/HTTP/RTSP 等
+    # 低延迟模式会开启后台采集并尝试 MJPG 编码以提高实时性
     if isinstance(source, str):
         s = source.strip()
         if s.isdigit():

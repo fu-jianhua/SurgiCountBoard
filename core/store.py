@@ -18,6 +18,7 @@ def _conn():
 CONN = None
 
 def init_db():
+    # 初始化 SQLite 表结构：会话、检测事件、（多摄像头）子会话与融合事件
     global CONN
     if CONN is None:
         CONN = _conn()
@@ -45,6 +46,7 @@ def init_db():
     CONN.commit()
 
 def start_session(camera_id: str, roi: str, start_ts: float = None) -> int:
+    # 创建新会话并返回 ID；camera_id 可为设备索引/多源字符串
     init_db()
     ts = start_ts or time.time()
     c = CONN.cursor()
@@ -53,6 +55,7 @@ def start_session(camera_id: str, roi: str, start_ts: float = None) -> int:
     return c.lastrowid
 
 def end_session(session_id: int, end_ts: float = None, video_path: str = None) -> None:
+    # 结束会话、写入结束时间与对应视频路径（如有）
     init_db()
     ts = end_ts or time.time()
     c = CONN.cursor()
@@ -60,6 +63,7 @@ def end_session(session_id: int, end_ts: float = None, video_path: str = None) -
     CONN.commit()
 
 def add_detection(session_id: int, ts: float, class_id: int, track_id: int, conf: float) -> None:
+    # 写入检测事件（唯一约束：同会话同类别同轨迹不重复），用于会话统计
     init_db()
     c = CONN.cursor()
     try:
@@ -81,6 +85,7 @@ def list_sessions(limit: int = 50):
     return c.fetchall()
 
 def session_stats(session_id: int):
+    # 单会话统计：按类别计数不同轨迹数（COUNT DISTINCT track_id）
     init_db()
     c = CONN.cursor()
     c.execute(
@@ -128,6 +133,7 @@ def search_sessions(camera_id: str | None = None, start_ts: float | None = None,
     return c.fetchall()
 
 def start_multi_session(start_ts: float | None = None, meta: str | None = None) -> int:
+    # 多摄像头总会话起始；meta 可记录源列表等信息
     init_db()
     ts = start_ts or time.time()
     c = CONN.cursor()
@@ -143,6 +149,7 @@ def end_multi_session(multi_id: int, end_ts: float | None = None):
     CONN.commit()
 
 def add_cam_session(multi_id: int, cam_index: int, session_id: int, video_path: str | None = None):
+    # 记录每路摄像头对应的子会话与视频文件路径
     init_db()
     c = CONN.cursor()
     c.execute(
@@ -152,6 +159,7 @@ def add_cam_session(multi_id: int, cam_index: int, session_id: int, video_path: 
     CONN.commit()
 
 def add_event(multi_id: int, cam_index: int, ts: float, class_id: int, track_id: int, x: float, y: float, conf: float):
+    # 写入原始事件（多摄像头模式下按路保存），用于后续融合与统计
     init_db()
     c = CONN.cursor()
     try:
@@ -164,6 +172,7 @@ def add_event(multi_id: int, cam_index: int, ts: float, class_id: int, track_id:
         CONN.rollback()
 
 def add_fused_event(multi_id: int, ts: float, class_id: int, members_json: str):
+    # 写入融合事件（成员以 JSON 存储），用于查看跨路匹配结果
     init_db()
     c = CONN.cursor()
     c.execute(
@@ -182,6 +191,7 @@ def get_cam_sessions(multi_id: int):
     return c.fetchall()
 
 def events_cam_stats(multi_id: int):
+    # 多摄像头各路统计：按路与类别统计不同轨迹数
     init_db()
     c = CONN.cursor()
     c.execute(
@@ -191,6 +201,7 @@ def events_cam_stats(multi_id: int):
     return c.fetchall()
 
 def events_final_stats_max(multi_id: int):
+    # 跨路取每个类别的最大值（保守汇总），返回类别到最大计数的映射
     rows = events_cam_stats(int(multi_id))
     best = {}
     for cam_index, class_id, cnt in rows:
@@ -202,6 +213,7 @@ def events_final_stats_max(multi_id: int):
     return [(k, best[k]) for k in sorted(best.keys())]
 
 def events_best_camera_stats(multi_id: int):
+    # 选择总数最多的摄像头，返回其类别统计（用于“最大摄像头”策略）
     rows = events_cam_stats(int(multi_id))
     cam_stats = {}
     cam_totals = {}

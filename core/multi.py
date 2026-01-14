@@ -16,6 +16,7 @@ class Event:
 
 
 class MultiCameraFusion:
+    # 多摄像头事件融合：时间窗 + 像素距离 + 类别一致，尝试将不同路的同一事件进行配对
     def __init__(self, time_thr: float = 0.3, dist_thr: float = 32.0):
         self.time_thr = float(time_thr)
         self.dist_thr = float(dist_thr)
@@ -33,9 +34,11 @@ class MultiCameraFusion:
     def push(self, ev: Event):
         self.buffer.append(ev)
         now = ev.ts
+        # 维护时间窗内的事件缓冲，自动清理过期事件
         self.buffer = [e for e in self.buffer if now - e.ts <= max(self.time_thr * 3.0, 2.0)]
 
     def try_fuse(self) -> Optional[Tuple[float, int, List[Event]]]:
+        # 尝试在缓冲中寻找可融合的跨路事件：不同摄像头、时间差/像素距离/类别均满足阈值
         if len(self.buffer) < 2:
             return None
         cand = []

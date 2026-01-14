@@ -31,17 +31,23 @@ class Pipeline:
         agnostic_nms: bool = True,
         dedup_iou: float = 0.65,
         count_mode: str = "roi",
+        leave_frames: int = 15,
     ):
+        # 加载检测模型（Ultralytics YOLO）；可传入已加载的模型或路径
         self.model = model if model is not None else YOLO(model_path)
         self.conf = conf
         self.iou = iou
+        # 是否启用跟踪（ByteTrack），用于“一轨一计”和防抖
         self.use_track = use_track
         self.device = device
         self.half = half
         self.imgsz = imgsz
         self.max_det = max_det
+        # NMS 是否类别无关（类间也抑制），在密集场景可能导致不同类别近邻互相抑制
         self.agnostic_nms = bool(agnostic_nms)
+        # 检测去重 IoU 阈值；过大易合并近邻真目标，过小保留重复框
         self.dedup_iou = float(dedup_iou)
+        # 计数模式：ROI 内到达稳态计数；或“计数线”跨线计数（默认 ROI）
         self.count_mode = "line" if str(count_mode).lower() not in ("roi",) else "roi"
         self.names = list(self.model.names.values()) if isinstance(self.model.names, dict) else self.model.names
         n_colors = max(1, len(self.names)) if isinstance(self.names, (list, tuple)) else 1
@@ -53,9 +59,12 @@ class Pipeline:
             hsv = np.array([[[int(h * 180.0), int(s * 255.0), int(v * 255.0)]]], dtype=np.uint8)
             bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]
             self._colors.append((int(bgr[0]), int(bgr[1]), int(bgr[2])))
+        # 计数线位置（相对宽度 0~1）；稳定帧阈值（轨迹累计帧数达到后才允许计数）
         self.line_pos = float(max(0.0, min(1.0, line_pos)))
         self.stable_frames = int(max(1, stable_frames))
+        self.leave_frames = int(max(1, leave_frames))
         self.seg_model = None
+        # SEG 辅助判别：用于屏蔽负面类（人/车等），降低误计；为空时不启用
         if seg_model is not None:
             self.seg_model = seg_model if not isinstance(seg_model, str) else YOLO(seg_model)
         self._neg_roots = set([
@@ -67,6 +76,7 @@ class Pipeline:
         self._tracks = {}
         self._frame_idx = 0
         self._bt = None
+        # 初始化跟踪器（ByteTrack），用于轨迹 ID 与状态管理
         if self.use_track:
             class _BTArgs:
                 track_thresh = 0.25
@@ -117,6 +127,7 @@ class Pipeline:
         return boxes[keep], clss[keep] if clss.size == boxes.shape[0] else clss, cfs[keep]
 
     def process(self, frame: np.ndarray, roi_rect):
+        # 单帧处理：检测 -> 去重 -> 跟踪 -> 计数/事件 -> 叠加绘制
         results = self.model(
             frame,
             conf=self.conf,
@@ -128,10 +139,12 @@ class Pipeline:
             agnostic_nms=self.agnostic_nms,
         )
         r = results[0]
+        # 提取检测框、类别、ID（若有）、置信度
         boxes = r.boxes.xyxy.cpu().numpy() if r.boxes is not None else np.empty((0, 4))
         clss = r.boxes.cls.cpu().numpy().astype(int) if r.boxes is not None and r.boxes.cls is not None else np.empty((0,), dtype=int)
         ids = r.boxes.id.cpu().numpy().astype(int) if r.boxes is not None and r.boxes.id is not None else np.empty((0,), dtype=int)
         confs = r.boxes.conf.cpu().numpy() if r.boxes is not None and r.boxes.conf is not None else np.empty((0,), dtype=float)
+        # 对检测结果做 IoU 去重（保留高置信框，降低同目标多框重复）
         if boxes is not None and boxes.size > 0:
             boxes, clss, confs = self._dedup_dets(boxes, clss if clss is not None else np.empty((0,), dtype=int), confs if confs is not None else np.empty((0,), dtype=float))
         ts = time.time()
@@ -140,10 +153,12 @@ class Pipeline:
         self._frame_idx += 1
         h, w = frame.shape[:2]
         display_mask = np.ones((len(boxes),), dtype=bool)
+        # 计算计数线位置（ROI 矩形内或整幅图宽度）
         if roi_rect is not None and not hasattr(roi_rect, "points"):
             line_x = int(roi_rect.x1 + self.line_pos * (roi_rect.x2 - roi_rect.x1))
         else:
             line_x = int(self.line_pos * w)
+        # 若开启跟踪，对检测框做 ByteTrack 跟踪更新
         if self.use_track and self._bt is not None:
             outputs = np.empty((len(boxes), 6), dtype=float)
             if len(boxes) > 0:
@@ -179,6 +194,7 @@ class Pipeline:
                     patch_x2 = min(w - 1, int(x2))
                     patch_y2 = min(h - 1, int(y2))
                     seg_pass = None
+                    # SEG 辅助：对初始目标 patch 做一次分割，如果出现负面类则标记 seg_pass=False
                     if self.seg_model is not None and patch_x2 > patch_x1 and patch_y2 > patch_y1:
                         patch = frame[patch_y1:patch_y2, patch_x1:patch_x2]
                         try:
@@ -200,25 +216,37 @@ class Pipeline:
                                 seg_pass = False
                         except Exception:
                             seg_pass = None
-                    st = {"last_cx": None, "frames": 0, "counted": False, "labels": Counter(), "seg_pass": seg_pass, "last_seen": self._frame_idx}
+                    # 初始化轨迹状态：累计帧、最后中心点、是否已计数、类别投票、SEG 判定、最后出现帧
+                    st = {"last_cx": None, "frames": 0, "counted": False, "labels": Counter(), "seg_pass": seg_pass, "last_seen": self._frame_idx, "roi_frames": 0, "out_frames": 0}
                     self._tracks[tid] = st
                 if det_idx >= 0 and self.seg_model is not None and st.get("seg_pass") is False:
                     if det_idx < display_mask.shape[0]:
                         display_mask[det_idx] = False
+                # 更新轨迹状态：累计帧、最后出现帧、类别投票
                 st["frames"] += 1
                 st["last_seen"] = self._frame_idx
                 if cls_id is not None and int(cls_id) >= 0:
                     st["labels"][int(cls_id)] += 1
                 prev_cx = st["last_cx"]
+                # 左→右跨线（当前实现仅此方向）
                 cross = prev_cx is not None and prev_cx < line_x and cx >= line_x
                 in_roi = True
                 if roi_rect is not None:
                     in_roi = roi_rect.contains(cx, cy) if not hasattr(roi_rect, "points") else roi_rect.contains(cx, cy)
-                if self.count_mode == "line":
-                    cond = (not st["counted"]) and cross and in_roi and (st["frames"] >= self.stable_frames)
+                if in_roi:
+                    st["roi_frames"] = int(st.get("roi_frames", 0)) + 1
+                    st["out_frames"] = 0
                 else:
-                    cond = (not st["counted"]) and in_roi and (st["frames"] >= self.stable_frames)
+                    st["out_frames"] = int(st.get("out_frames", 0)) + 1
+                    st["roi_frames"] = 0
+                if int(st.get("out_frames", 0)) >= self.leave_frames:
+                    st["counted"] = False
+                if self.count_mode == "line":
+                    cond = (not st["counted"]) and cross and in_roi and (st.get("roi_frames", 0) >= self.stable_frames)
+                else:
+                    cond = (not st["counted"]) and in_roi and (st.get("roi_frames", 0) >= self.stable_frames)
                 if cond:
+                    # 通过 SEG 判定（未启用/通过/未定），按多数票主类进行“一轨一计”，并记录事件
                     if self.seg_model is None or st["seg_pass"] is True or st["seg_pass"] is None:
                         if len(st["labels"]) > 0:
                             maj_cls = max(st["labels"].items(), key=lambda kv: kv[1])[0]
@@ -227,6 +255,7 @@ class Pipeline:
                             events.append((ts, int(maj_cls), int(tid), float(c), float(cx), float(cy)))
                             st["counted"] = True
                 st["last_cx"] = cx
+            # 清理长时间未出现的轨迹，避免状态膨胀
             remove_tids = []
             for tid, st in self._tracks.items():
                 if st["last_seen"] < self._frame_idx - max(self.stable_frames * 5, 30):
@@ -234,6 +263,7 @@ class Pipeline:
             for tid in remove_tids:
                 self._tracks.pop(tid, None)
         else:
+            # 非跟踪回退：逐帧对 ROI 内检测计数（可能过计，仅降级使用）
             for i in range(len(boxes)):
                 x1, y1, x2, y2 = boxes[i]
                 cx = (x1 + x2) / 2.0
@@ -243,6 +273,7 @@ class Pipeline:
                     counts[name] = counts.get(name, 0) + 1
                     events.append((ts, int(clss[i]), -1, float(confs[i]) if i < len(confs) else 0.0, float(cx), float(cy)))
         annotated = frame.copy()
+        # 叠加绘制：边框、类别/置信度标签、ROI 边界与计数线
         for i in range(len(boxes)):
             if not display_mask[i]:
                 continue
@@ -292,6 +323,7 @@ class Pipeline:
         if self.count_mode == "line":
             cv2.line(annotated, (int(line_x), 0), (int(line_x), annotated.shape[0] - 1), (0, 192, 255), 2)
         has_roi_det = False
+        # 标记当前帧是否检测到落在 ROI 内的目标（用于会话开始/结束判定）
         for i in range(len(boxes)):
             if not display_mask[i]:
                 continue

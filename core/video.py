@@ -10,6 +10,7 @@ def _ensure_dir(path: str):
         os.makedirs(d, exist_ok=True)
 
 class FFmpegWriter:
+    # 通过 ffmpeg 子进程写入 H.264 MP4，适合高质量与流式写入
     def __init__(self, path: str, w: int, h: int, fps: float, ffmpeg_path: str):
         self.w = w
         self.h = h
@@ -63,6 +64,7 @@ class FFmpegWriter:
             pass
 
 def open_writer(path: str, frame_shape: tuple[int, int, int], fps: float = 25.0):
+    # 打开视频写入器：优先使用 ffmpeg，其次回退到 OpenCV VideoWriter
     _ensure_dir(path)
     h, w = frame_shape[0], frame_shape[1]
     ffmpeg = shutil.which("ffmpeg")
@@ -78,7 +80,9 @@ def open_writer(path: str, frame_shape: tuple[int, int, int], fps: float = 25.0)
     return cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
 
 def write_frame(writer, frame):
+    # 写入单帧（若为 FFmpegWriter，会自动调整尺寸并写入字节流）
     writer.write(frame)
 
 def close_writer(writer):
+    # 关闭写入器并刷新输出文件
     writer.release()
