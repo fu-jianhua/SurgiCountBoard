@@ -6,108 +6,46 @@ from typing import Any
 from ultralytics.solutions.solutions import BaseSolution, SolutionAnnotator, SolutionResults
 from ultralytics.utils.plotting import colors
 
+
 class MyObjectCounter(BaseSolution):
     def __init__(self, **kwargs: Any) -> None:
-        _min_track_frames = kwargs.pop("min_track_frames", 3)
-        _min_conf = kwargs.pop("min_conf", 0.25)
-        _min_area_ratio = kwargs.pop("min_area_ratio", 0.0005)
-        _entry_dedup_time = kwargs.pop("entry_dedup_time", 1.0)
-        _entry_dedup_dist = kwargs.pop("entry_dedup_dist", 20.0)
-        _count_mode = kwargs.pop("count_mode", "roi")
-        _line_pos = kwargs.pop("line_pos", 0.5)
-        _count_init_inside = kwargs.pop("count_init_inside", True)
+        """Initialize the ObjectCounter class for real-time object counting in video streams."""
         super().__init__(**kwargs)
 
-        self.in_count = 0
-        self.out_count = 0
-        self.classwise_count = defaultdict(lambda: {"IN": 0, "OUT": 0})
-        self.region_initialized = False
+        self.in_count = 0  # Counter for objects moving inward
+        self.out_count = 0  # Counter for objects moving outward
+        self.counted_ids = []  # List of IDs of objects that have been counted
+        self.classwise_count = defaultdict(lambda: {"IN": 0, "OUT": 0})  # Dictionary for counts, categorized by class
+        self.region_initialized = False  # Flag indicating whether the region has been initialized
 
         self.show_in = self.CFG["show_in"]
         self.show_out = self.CFG["show_out"]
-        self.margin = self.line_width * 2
-
-        self.track_states = {}
-        self._entry_events = []
-        self._recent_entries = []
-        self.min_track_frames = _min_track_frames
-        self.min_conf = _min_conf
-        self.min_area_ratio = _min_area_ratio
-        self.entry_dedup_time = _entry_dedup_time
-        self.entry_dedup_dist = _entry_dedup_dist
-        self.count_mode = _count_mode
-        self.line_pos = _line_pos
-        self.count_init_inside = _count_init_inside
-        self._im_w = None
-        self._im_h = None
-
-    def _rect_bounds(self):
-        xs = [p[0] for p in self.region]
-        ys = [p[1] for p in self.region]
-        return min(xs), min(ys), max(xs), max(ys)
-
-    def _inside(self, pt):
-        x1, y1, x2, y2 = self._rect_bounds()
-        return pt[0] >= x1 and pt[0] <= x2 and pt[1] >= y1 and pt[1] <= y2
-
-    def _inside_shrink(self, pt, m):
-        x1, y1, x2, y2 = self._rect_bounds()
-        return pt[0] >= (x1 + m) and pt[0] <= (x2 - m) and pt[1] >= (y1 + m) and pt[1] <= (y2 - m)
-
-    def _bbox_area_ratio(self, box):
-        if self._im_w is None or self._im_h is None:
-            return 1.0
-        w = max(0.0, float(box[2]) - float(box[0]))
-        h = max(0.0, float(box[3]) - float(box[1]))
-        area = w * h
-        total = float(self._im_w * self._im_h)
-        return (area / total) if total > 0 else 0.0
-
-    def _dedup_recent_entry(self, cls_id, cx, cy, ts):
-        keep = []
-        for e in self._recent_entries:
-            if ts - e[0] <= self.entry_dedup_time:
-                keep.append(e)
-        self._recent_entries = keep
-        for e in self._recent_entries:
-            if e[1] == cls_id:
-                dx = e[2] - cx
-                dy = e[3] - cy
-                if (dx * dx + dy * dy) ** 0.5 <= self.entry_dedup_dist:
-                    return True
-        self._recent_entries.append((ts, int(cls_id), float(cx), float(cy)))
-        return False
+        self.margin = self.line_width * 2  # Scales the background rectangle size to display counts properly
 
     def count_objects(
         self,
-        current_centroid,
-        track_id,
-        prev_position,
-        cls,
-        conf,
-        box,
+        current_centroid: tuple[float, float],
+        track_id: int,
+        prev_position: tuple[float, float] | None,
+        cls: int,
     ) -> None:
-        prev_inside = self.track_states.get(int(track_id), {}).get("inside", None)
-        curr_inside = self._inside(current_centroid)
-        curr_inside_s = self._inside_shrink(current_centroid, self.margin)
-        frames = len(self.track_history[track_id]) if track_id in self.track_history else 0
-        area_ratio = self._bbox_area_ratio(box)
-        ts = time.time()
-        if frames >= int(self.min_track_frames) and float(conf) >= float(self.min_conf) and float(area_ratio) >= float(self.min_area_ratio):
-            if prev_inside is None and self.count_init_inside and curr_inside_s is True:
-                if not self._dedup_recent_entry(int(cls), float(current_centroid[0]), float(current_centroid[1]), ts):
-                    self.in_count += 1
-                    self.classwise_count[self.names[cls]]["IN"] += 1
-                    self._entry_events.append((ts, int(cls), int(track_id), float(conf), float(current_centroid[0]), float(current_centroid[1])))
-            elif prev_inside is False and curr_inside_s is True:
-                if not self._dedup_recent_entry(int(cls), float(current_centroid[0]), float(current_centroid[1]), ts):
-                    self.in_count += 1
-                    self.classwise_count[self.names[cls]]["IN"] += 1
-                    self._entry_events.append((ts, int(cls), int(track_id), float(conf), float(current_centroid[0]), float(current_centroid[1])))
-            elif prev_inside is True and curr_inside is False:
+        if prev_position is None or track_id in self.counted_ids:
+            return
+
+        if self.r_s.contains(self.Point(current_centroid)):
+            # Determine motion direction for vertical or horizontal polygons
+            region_width = max(p[0] for p in self.region) - min(p[0] for p in self.region)
+            region_height = max(p[1] for p in self.region) - min(p[1] for p in self.region)
+
+            if (region_width < region_height and current_centroid[0] > prev_position[0]) or (
+                region_width >= region_height and current_centroid[1] > prev_position[1]
+            ):  # Moving right or downward
+                self.in_count += 1
+                self.classwise_count[self.names[cls]]["IN"] += 1
+            else:  # Moving left or upward
                 self.out_count += 1
                 self.classwise_count[self.names[cls]]["OUT"] += 1
-        self.track_states[int(track_id)] = {"inside": curr_inside}
+            self.counted_ids.append(track_id)
 
     def display_counts(self, plot_im) -> None:
         labels_dict = {
@@ -119,16 +57,13 @@ class MyObjectCounter(BaseSolution):
         if labels_dict:
             self.annotator.display_analytics(plot_im, labels_dict, (104, 31, 17), (255, 255, 255), self.margin)
 
-    def process(self, im0, **kwargs) -> SolutionResults:
+    def process(self, im0, tap) -> SolutionResults:
         if not self.region_initialized:
             self.initialize_region()
             self.region_initialized = True
 
-        self.extract_tracks(im0)
-        self.annotator = SolutionAnnotator(im0, line_width=self.line_width)
-        self._entry_events = []
-        self._im_h = int(im0.shape[0])
-        self._im_w = int(im0.shape[1])
+        self.extract_tracks(im0)  # Extract tracks
+        self.annotator = SolutionAnnotator(im0, line_width=self.line_width)  # Initialize annotator
 
         self.annotator.draw_region(
             reg_pts=self.region, color=(104, 0, 123), thickness=self.line_width * 2
@@ -136,7 +71,9 @@ class MyObjectCounter(BaseSolution):
 
         target_infos = []
 
+        # Iterate over bounding boxes, track ids and classes index
         for box, track_id, cls, conf in zip(self.boxes, self.track_ids, self.clss, self.confs):
+            # 收集目标信息
             target_info = {
                 "track_id": int(track_id),
                 "class_id": int(cls),
@@ -146,18 +83,22 @@ class MyObjectCounter(BaseSolution):
                 "centroid": self.track_history[track_id][-1] if track_id in self.track_history else None
             }
             target_infos.append(target_info)
+            # Draw bounding box and counting region
             self.annotator.box_label(box, label=self.adjust_box_label(cls, conf, track_id), color=colors(cls, True))
-            self.store_tracking_history(track_id, box)
+            self.store_tracking_history(track_id, box)  # Store track history
 
+            # Store previous position of track for object counting
             prev_position = None
             if len(self.track_history[track_id]) > 1:
                 prev_position = self.track_history[track_id][-2]
-            self.count_objects(self.track_history[track_id][-1], track_id, prev_position, cls, conf, box)
+            self.count_objects(self.track_history[track_id][-1], track_id, prev_position, cls)  # object counting
 
         plot_im = self.annotator.result()
-        self.display_counts(plot_im)
-        self.display_output(plot_im)
+        # self.display_counts(plot_im)  # Display the counts on the frame
+        self.display_output(plot_im)  # Display output with base class function
+        print(f"tap: {tap}, in_count: {self.in_count}, out_count: {self.out_count}")
 
+        # Return SolutionResults
         return SolutionResults(
             plot_im=plot_im,
             in_count=self.in_count,
@@ -166,16 +107,14 @@ class MyObjectCounter(BaseSolution):
             total_tracks=len(self.track_ids),
             target_infos=target_infos
         )
-    
+      
 class OfficialPipeline:
-    def __init__(self, model_path, conf=0.25, iou=0.45, device="cpu", half=False, imgsz=640, max_det=200, use_track=True, line_pos=0.6, count_mode="roi"):
+    def __init__(self, model_path, conf=0.25, iou=0.45, device="cpu", half=False, use_track=True, line_pos=0.6, count_mode="roi"):
         self.model_path = model_path
         self.conf = conf
         self.iou = iou
         self.device = device
         self.half = half
-        self.imgsz = imgsz
-        self.max_det = max_det
         self.use_track = use_track
         self.line_pos = float(line_pos)
         self.count_mode = str(count_mode)
@@ -191,11 +130,11 @@ class OfficialPipeline:
     def _ensure_solution(self, frame, roi):
         region = self._roi_points(roi)
         if self.use_track:
-            self._sol = MyObjectCounter(show=False, region=region, model=self.model_path, tracker="custom_bytetrack.yaml", min_track_frames=2, min_conf=self.conf, min_area_ratio=0.0005, entry_dedup_time=1.0, entry_dedup_dist=20.0, count_mode=self.count_mode, line_pos=self.line_pos, count_init_inside=True)
+            self._sol = MyObjectCounter(show=False, region=region, model=self.model_path, tracker="custom_bytetrack.yaml")
             print("use_track: True!!!!!!!!!!!!!!!!!")
         else:
-            self._sol = MyObjectCounter(show=False, region=region, model=self.model_path, min_track_frames=2, min_conf=self.conf, min_area_ratio=0.0005, entry_dedup_time=1.0, entry_dedup_dist=20.0, count_mode=self.count_mode, line_pos=self.line_pos, count_init_inside=True)
-        self._mode = "hybrid"
+            self._sol = MyObjectCounter(show=False, region=region, model=self.model_path)
+        self._mode = "line"
         
 
     def process(self, frame, roi, tap):
@@ -224,5 +163,6 @@ class OfficialPipeline:
         roi_det = any(isinstance(c, (int, float)) and c > 0 for c in rc.values())
     
         events = entry_events
+        print(f"!!!!!entry_events: {entry_events}, counts: {counts}, events: {events}, roi_det: {roi_det}, target_infos: {target_infos}")
         return annotated, counts, events, roi_det, target_infos
 

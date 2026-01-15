@@ -4,7 +4,6 @@ import cv2
 import torch
 import streamlit as st
 import pandas as pd
-import numpy as np
 from core.source import open_capture
 from core.utils import FPSMeter
 from core.roi import ROIRect
@@ -67,22 +66,23 @@ with st.sidebar:
         conf = st.slider("置信度", 0.0, 1.0, 0.25, 0.01)
         iou = st.slider("IoU", 0.0, 1.0, 0.45, 0.01)
         track_enabled = st.checkbox("启用跟踪", True)
-        seg_enabled = st.checkbox("启用SEG辅助判别", False)
-        imgsz = st.number_input("推理分辨率(imgsz)", min_value=256, max_value=1280, value=640, step=64)
-        max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
-    with st.expander("会话与ROI", expanded=False):
-        # 会话空窗时间与 ROI/计数线设置；计数线位置仅在"计数线"模式下可视预览
         idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
-        if "line_pos_pct" not in st.session_state:
-            st.session_state.line_pos_pct = 60
-        if "count_mode" not in st.session_state:
-            st.session_state.count_mode = "roi"
-        count_mode_label = st.selectbox("计数方式", ["ROI", "计数线"], index=0 if st.session_state.count_mode == "roi" else 1)
-        st.session_state.count_mode = "roi" if count_mode_label == "ROI" else "line"
-        line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1)
-        st.session_state.line_pos_pct = int(line_pos_slider)
-        # 最终计数策略：简化为"最大摄像头"（总数与种类最多的一路）
-        st.session_state.final_policy = "max_camera"
+        # seg_enabled = st.checkbox("启用SEG辅助判别", False)
+        # imgsz = st.number_input("推理分辨率(imgsz)", min_value=256, max_value=1280, value=640, step=64)
+        # max_det = st.number_input("最大检测数(max_det)", min_value=10, max_value=1000, value=200, step=10)
+    # with st.expander("会话与ROI", expanded=False):
+    #     # 会话空窗时间与 ROI/计数线设置；计数线位置仅在"计数线"模式下可视预览
+    #     idle_seconds = st.number_input("空窗秒数", min_value=1, max_value=120, value=10, step=1)
+    #     if "line_pos_pct" not in st.session_state:
+    #         st.session_state.line_pos_pct = 60
+    #     if "count_mode" not in st.session_state:
+    #         st.session_state.count_mode = "roi"
+    #     count_mode_label = st.selectbox("计数方式", ["ROI", "计数线"], index=0 if st.session_state.count_mode == "roi" else 1)
+    #     st.session_state.count_mode = "roi" if count_mode_label == "ROI" else "line"
+    #     line_pos_slider = st.slider("计数线位置(%)", 0, 100, int(st.session_state.line_pos_pct), 1)
+    #     st.session_state.line_pos_pct = int(line_pos_slider)
+    #     # 最终计数策略：简化为"最大摄像头"（总数与种类最多的一路）
+    #     st.session_state.final_policy = "max_camera"
     fps_box = st.empty()
     score_box = st.empty()
 
@@ -95,32 +95,44 @@ _render_status()
 
 @st.cache_resource(show_spinner=False)
 def _load_model(path):
+    """加载模型"""
     from ultralytics import YOLO
     return YOLO(path)
 
 def _open_sources(srcs, low_latency):
+    """打开视频源"""
     caps = []
     for s in srcs:
         caps.append(open_capture(s, low_latency=low_latency))
     return caps
 
 def _single_run():
+    """单摄像头运行"""
     col1, col2 = st.columns(2)
+    # 显示原始帧与标注帧
     org = col1.empty()
     ann = col2.empty()
+    
+    # 初始化采集器
     if "cap" not in st.session_state:
         st.session_state.cap = None
+    # 初始化视频写入器
     if "writer" not in st.session_state:
         st.session_state.writer = None
+    # 初始化会话管理器
     if "session" not in st.session_state:
         st.session_state.session = None
+    # 初始化运行时计数面板
     if "running_counts" not in st.session_state:
         st.session_state.running_counts = {}
+        
+    # 开始按钮：打开视频源、加载模型、初始化会话
     if start_btn and not st.session_state.running:
         # 打开摄像头、构建 OfficialPipeline，初始化 ROI 与会话
         st.session_state.status = "启动中..."
         _render_status()
         st.session_state.running = True
+        # 打开视频源
         cap = open_capture(source_str, low_latency=low_latency)
         st.session_state.cap = cap
         if not cap.isOpened():
@@ -143,8 +155,6 @@ def _single_run():
             iou=iou,
             device=dev,
             half=use_half,
-            imgsz=int(imgsz),
-            max_det=int(max_det),
             use_track=bool(track_enabled),
             line_pos=float(st.session_state.get("line_pos_pct", 70))/100.0,
             count_mode=str(st.session_state.get("count_mode", "roi"))
@@ -159,6 +169,7 @@ def _single_run():
         h,w = frame.shape[:2]
         # 默认 ROI 为全画面（也可替换为自定义矩形或多边形）
         roi = ROIRect(0,0,w-1,h-1)
+        # 初始化会话管理器
         st.session_state.session = SessionManager(camera_id=str(source_str), idle_seconds=int(idle_seconds), roi_json=roi.to_json())
         st.session_state.roi = roi
         st.session_state.status = "运行中"
