@@ -79,8 +79,8 @@ class Pipeline:
         # 初始化跟踪器（ByteTrack），用于轨迹 ID 与状态管理
         if self.use_track:
             class _BTArgs:
-                track_thresh = 0.25
-                track_buffer = 30
+                track_thresh = 0.4
+                track_buffer = 50
                 match_thresh = 0.8
                 aspect_ratio_thresh = 3.0
                 min_box_area = 1.0
@@ -153,6 +153,7 @@ class Pipeline:
         self._frame_idx += 1
         h, w = frame.shape[:2]
         display_mask = np.ones((len(boxes),), dtype=bool)
+        display_labels = np.full((len(boxes),), -1, dtype=int)
         # 计算计数线位置（ROI 矩形内或整幅图宽度）
         if roi_rect is not None and not hasattr(roi_rect, "points"):
             line_x = int(roi_rect.x1 + self.line_pos * (roi_rect.x2 - roi_rect.x1))
@@ -227,6 +228,9 @@ class Pipeline:
                 st["last_seen"] = self._frame_idx
                 if cls_id is not None and int(cls_id) >= 0:
                     st["labels"][int(cls_id)] += 1
+                if len(st["labels"]) > 0 and det_idx >= 0 and det_idx < len(display_labels):
+                    maj_cls = max(st["labels"].items(), key=lambda kv: kv[1])[0]
+                    display_labels[det_idx] = int(maj_cls)
                 prev_cx = st["last_cx"]
                 # 左→右跨线（当前实现仅此方向）
                 cross = prev_cx is not None and prev_cx < line_x and cx >= line_x
@@ -278,17 +282,23 @@ class Pipeline:
             if not display_mask[i]:
                 continue
             x1, y1, x2, y2 = boxes[i]
-            if i < len(clss):
+            if i < len(display_labels) and int(display_labels[i]) >= 0:
+                ci = int(display_labels[i])
+            elif i < len(clss):
                 ci = int(clss[i])
-                if isinstance(self._colors, list) and ci >= 0 and ci < len(self._colors):
-                    color = self._colors[ci]
-                else:
-                    color = (0, 255, 0)
+            else:
+                ci = -1
+            if isinstance(self._colors, list) and ci >= 0 and ci < len(self._colors):
+                color = self._colors[ci]
             else:
                 color = (0, 255, 0)
             cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
-            if i < len(clss):
-                name = self.names[clss[i]] if clss[i] < len(self.names) else str(clss[i])
+            if i < len(display_labels) and int(display_labels[i]) >= 0:
+                ci = int(display_labels[i])
+                name = self.names[ci] if ci < len(self.names) else str(ci)
+            elif i < len(clss):
+                ci = int(clss[i])
+                name = self.names[ci] if ci < len(self.names) else str(ci)
             else:
                 name = ""
             conf_txt = f" {confs[i]:.2f}" if i < len(confs) else ""
