@@ -188,12 +188,14 @@ def _single_run():
             stop_frames = 20
             fps_meter = FPSMeter()
             last_ts = time.time()
+            tap = 0
             while st.session_state.running and st.session_state.cap.isOpened():
                 ok, frame = st.session_state.cap.read()
                 if not ok: break
                 # 处理当前帧, 调用 pipeline.process 进行检测、跟踪、计数、可视化
                 # OfficialPipeline.process 返回 (annotated, counts, events, roi_det, target_infos)
-                annotated, counts, events, roi_det, target_infos = st.session_state.pipeline.process(frame, st.session_state.roi)
+                tap += 1
+                annotated, counts, events, roi_det, target_infos = st.session_state.pipeline.process(frame, st.session_state.roi, tap)
                 
                 # 打印目标信息用于调试
                 if target_infos and len(target_infos) > 0:
@@ -357,6 +359,7 @@ def _multi_run():
         det_streak = [0]*len(pipelines)
         no_det_streak = [0]*len(pipelines)
         try:
+            tap = 0
             while st.session_state.running:
                 for idx, cap in enumerate(caps):
                     if not cap.isOpened():
@@ -367,7 +370,8 @@ def _multi_run():
                     if rois[idx] is None:
                         h, w = frame.shape[:2]
                         rois[idx] = ROIRect(0, 0, w - 1, h - 1)
-                    annotated, counts, events, roi_det, target_infos = pipelines[idx].process(frame, rois[idx])
+                    tap += 1
+                    annotated, counts, events, roi_det, target_infos = pipelines[idx].process(frame, rois[idx], tap)
                     # 打印目标信息用于调试
                     if target_infos and len(target_infos) > 0:
                         print(f"检测到 {len(target_infos)} 个目标:")
@@ -551,9 +555,14 @@ else:
     if sid_sel:
         ss = get_session(int(sid_sel))
         cams = get_cam_sessions(int(sid_sel))
-        if len(cams) > 0:
-            from core.store import events_best_camera_stats
-            stats = events_best_camera_stats(int(sid_sel))
+        is_multi = (len(cams) > 0) or (ss and isinstance(ss[1], str) and ("," in ss[1]))
+        if is_multi:
+            from core.store import events_best_camera_stats, events_final_stats_max
+            policy = st.session_state.get("final_policy", "max_camera")
+            if policy == "max_camera":
+                stats = events_best_camera_stats(int(sid_sel))
+            else:
+                stats = events_final_stats_max(int(sid_sel))
         else:
             stats = session_stats(int(sid_sel))
         names_cn_map = {
